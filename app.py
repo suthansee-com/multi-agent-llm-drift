@@ -18,11 +18,11 @@ if file_upload is not None:
         for record in records:
             title = record.get("title","Unknown")
             for para in record.get("paragraphs", []):
-               
-                for qa in para.get("qas",[]):
+               context_text = para.get("context", "")
+            for qa in para.get("qas",[]):
                     question = qa.get("question")
                     qid = qa.get("id", "")
-
+                    # context = qa.get("context","")
                     answers = qa.get("answers",[])
                     answer_text = [a.get("text", "") for a in answers]
                 
@@ -30,6 +30,7 @@ if file_upload is not None:
                     "source_text_id": f"{title}_{qid}",
                     "topic": title,
                     "question": question,
+                    "context": context_text,
                     "answers": answer_text,
                     "answer_count": len(answer_text)
                 })
@@ -55,22 +56,27 @@ if file_upload is not None:
             st.session_state["batch_df"] = None
         
         if generate_btn:
-            random.seed(random_seed)
-            selected_sample = random.sample(all_data, sample_size)
+            try:
+                random.seed(random_seed)
+                selected_sample = random.sample(all_data, sample_size)
 
-            st.session_state["batch_df"] = pd.DataFrame(selected_sample)
-            st.toast("Batch generated successfully!")
+                st.session_state["batch_df"] = pd.DataFrame(selected_sample)
+                st.toast("Batch generated successfully!")
+            except Exception as e:
+                st.error("Failed")
 
         if st.session_state["batch_df"] is not None:
-            df_batch = st.session_state["batch_df"]
+            df_batch = st.session_state["batch_df"].copy()
+
+            df_batch['answers']= df_batch['answers'].apply(lambda x: ", ".join(x) if isinstance(x, list) else x)
         
             with col2:
                 st.markdown(f"Current Pool Summery: ")
                 st.write(f"Total Unique Topics Sampled: '{df_batch['topic'].nunique()}'")
-                st.write(f"Average Question Length: {df_batch['question'].str.len().mean():.2f} characters")
+                st.write(f"Average context Length: {df_batch['context'].str.len().mean():.0f} characters")
 
                 st.markdown("Sampled Preview")
-                st.dataframe(df_batch[["source_text_id","topic","question"]], use_container_width=True, height=300)
+                st.dataframe(df_batch[["source_text_id","topic","question", "context"]], use_container_width=True)
 
 
             df_batch.to_csv("Selected_squad_batch.csv", index=False)
