@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import re
 import operator
-from typing import TypedDict, List
+from typing import TypedDict, List, Annotated
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -51,7 +51,31 @@ def get_wordnet_pos(treebank_tag: str):
     else:
         return wordnet.NOUN
 
-
+def clean_llm_artifacts(text: str) -> str:
+    text = re.sub(r'```[\s\S]*?```', '', text)
+    text = re.sub(r'`[^`]+`', '', text)
+    text = re.sub(r'\n*Note:.*$', '', text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'\n*I (?:made|have made|tried to).*$', '', text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'\n*Here (?:are|is) (?:some|the) (?:changes|updates).*$', '', text, flags=re.IGNORECASE | re.DOTALL)
+    
+    preambles = [
+        r'^Here[\'s]* (?:is )?(?:my |the )?(?:rewritten|cleaned|corrected|revised|summarized) (?:version|text)[:\\.]?\s*',
+        r'^Here[\'s]* (?:the )?(?:rewritten|cleaned|corrected|revised) (?:text|version)[:\\.]?\s*',
+        r'^The (?:rewritten|cleaned|corrected|revised) text[:\\.]?\s*',
+        r'^(?:Rewritten|Cleaned|Corrected|Revised) (?:version|text)[:\\.]?\s*',
+        r'^Below (?:is )?(?:my )?(?:rewritten|cleaned|corrected|revised)[:\\.]?\s*',
+        r'^I[\'ve]* (?:rewritten|cleaned|corrected|revised)[:\\.]?\s*',
+    ]
+    
+    for pattern in preambles:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
+    
+    text = re.sub(r'^\d+\.\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[-*]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\n\s*\n', '\n', text)
+    
+    return text.strip()
 
 def extract_content_tokens(text: str) -> set:
     try:
