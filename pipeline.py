@@ -1,15 +1,27 @@
 import streamlit as st
 import re
 import operator
+import string
+from collections import Counter
 from typing import TypedDict, List, Annotated
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 import nltk
 from nltk.tokenize import word_tokenize
 from nltk import pos_tag
 from nltk.corpus import wordnet
 from nltk.stem import WordNetLemmatizer
+
+SEMANTIC_SHIFT_THRESHOLD = 0.15
+
+AGENT_MODEL = "gemma2:2b"
+READER_MODEL = "gemma2:2b"
+RATER_MODEL_A = "llama3:8b"
+RATER_MODEL_B = "mistral:7b"
+EMBEDDER_MODEL = "all-MiniLM-L6-v2"
 
 
 @st.cache_resource
@@ -32,6 +44,11 @@ init_nltk()
 lemmatizer = WordNetLemmatizer()
 
 
+@st.cache_resource
+def get_embedder():
+    return SentenceTransformer(EMBEDDER_MODEL)
+
+
 class AgentState(TypedDict):
     """A dictionary representing the state of an agent."""
     original_context: str
@@ -42,11 +59,17 @@ class AgentState(TypedDict):
     current_depth: int
     target_depth: int
     temperature: float
-    token_preservation_scores: Annotated[List[float], operator.add]
+    lexical_preservation_scores: Annotated[List[float], operator.add]
     is_impossible: bool
-    semantic_understanding_scores: Annotated[List[int], operator.add]
+    semantic_drift_scores: Annotated[List[float], operator.add]
+    global_drift_scores: Annotated[List[float], operator.add]
+    qa_recoverability_scores: Annotated[List[float], operator.add]
+    em_recoverability_scores: Annotated[List[float], operator.add]
     agent_answers: Annotated[List[str], operator.add]
-    
+    fabrication_flags: Annotated[List[int], operator.add]
+    seed: int
+    all_valid_answers: List[str]
+
 
 
 def calculate_core_token_preservation(original: str, current: str) -> float:
@@ -83,7 +106,7 @@ def extract_content_tokens(text: str) -> set:
         return set([w for w in text.lower().split() if len(w) > 2])
 
 
-def extract_agent_understanding(context: str, question: str) -> dict:
+def extract_agent_understanding(context: str, question: str, seed: int = 42) -> dict:
     """
     Extract what the agent understands from the context.
     This is the core of semantic drift measurement.
@@ -91,7 +114,7 @@ def extract_agent_understanding(context: str, question: str) -> dict:
     Returns:
         Dictionary with key_facts, understanding, and answer
     """
-    llm = ChatOllama(model="gemma2:2b", temperature=0.1)
+    llm = ChatOllama(model=READER_MODEL, temperature=0.0, seed=seed)
     
     system_prompt = SystemMessage(
         content=(
@@ -142,41 +165,95 @@ ANSWER: [your answer]"""
             "answer": ""
         }
 
+def normalize_answer(s: str) -> str:
+    s = s.lower()
+    s = "".join(ch for ch in s if ch not in set(string.punctuation))
+    s = re.sub(r"\b(a|an|the)\b", " ", s)
+    return " ".join(s.split())
 
-def measure_semantic_drift(original_understanding: dict, current_understanding: dict, expected_answer: str) -> float:
-    """
-    Measure semantic drift by comparing:
-    1. Does agent still provide an answer (not CANNOT_ANSWER)?
-    2. Does the answer match expected answer?
+
+def squad_f1(prediction: str, ground_truth: str) -> float:
+    """SQuAD official token-level F1"""
+    pred_tokens = normalize_answer(prediction).split()
+    gt_tokens = normalize_answer(ground_truth).split()
+    common = Counter(pred_tokens) & Counter(gt_tokens)
+    num_same = sum(common.values())
+    if num_same == 0:
+        return 0.0
+    precision = num_same / len(pred_tokens)
+    recall = num_same / len(gt_tokens)
+    return 2 * precision * recall / (precision + recall)
+
     
-    Returns:
-        0.0 if understanding completely lost (same as original)
-        1.0 if understanding fully degraded (cannot answer)
-        0.5 if partial degradation (wrong answer but attempted)
-    
-    Note: Higher score = more drift (opposite of preservation)
-    """
-    original_answer = original_understanding.get("answer", "").lower().strip()
+def squad_em(prediction: str, ground_truth: str) -> float:
+    """SQuAD official exact match."""
+    return float(normalize_answer(prediction) == normalize_answer(ground_truth))
+
+
+def measure_em_recoverability(
+    current_understanding: dict,
+    expected_answers,
+    is_impossible: bool = False,
+) -> float:
     current_answer = current_understanding.get("answer", "").lower().strip()
-    expected = expected_answer.lower().strip()
-    
+
+    if is_impossible:
+        return 0.0 if "cannot_answer" in current_answer else 1.0
+
     if "cannot_answer" in current_answer:
         return 1.0
-    
-    if "cannot_answer" not in original_answer:
-        if expected in current_answer or any(word in current_answer for word in expected.split()):
-            return 0.0 
-        else:
-            return 0.5  
-    
-    return 0.0  
+
+    if isinstance(expected_answers, str):
+        expected_answers = [expected_answers]
+
+    golds = [g for g in (expected_answers or []) if isinstance(g, str) and g.strip()]
+    if not golds:
+        return 1.0
+
+    best_em = max(squad_em(current_answer, g) for g in golds)
+    return 1.0 - best_em
+
+
+def measure_qa_recoverability(
+    current_understanding: dict,
+    expected_answers,
+    is_impossible: bool = False,
+) -> float:
+    current_answer = current_understanding.get("answer", "").lower().strip()
+
+    if is_impossible:
+        return 0.0 if "cannot_answer" in current_answer else 1.0
+
+    if "cannot_answer" in current_answer:
+        return 1.0
+
+    if isinstance(expected_answers, str):
+        expected_answers = [expected_answers]
+
+    golds = [g for g in (expected_answers or []) if isinstance(g, str) and g.strip()]
+    if not golds:
+        return 1.0
+
+    best_f1 = max(squad_f1(current_answer, g) for g in golds)
+    return 1.0 - best_f1
+
+
+def calculate_semantic_drift(previous_text: str, current_text: str) -> float:
+    try:
+        embedder = get_embedder()
+        embeddings = embedder.encode([previous_text, current_text])
+        similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
+        return float(min(1.0, max(0.0, 1.0 - similarity)))
+    except Exception as e:
+        print(f"Semantic drift error: {e}")
+        return 1.0
 
 
 def create_pipeline():
     """Creating a pipeline."""
 
     def rewrite_node(state: AgentState):
-        llm = ChatOllama(model="gemma2:2b", temperature=state["temperature"])
+        llm = ChatOllama(model=AGENT_MODEL, temperature=state["temperature"], seed=state["seed"])
         system_prompt = SystemMessage(
             content=(
                 "You are a strict text-processing relay agent. Rewrite the provided text "
@@ -196,52 +273,54 @@ def create_pipeline():
         raw_text = response.content.strip()
         rewritten_text = clean_llm_artifacts(raw_text)
 
-        # preservation_score = calculate_core_token_preservation(
-        #     state["original_context"], rewritten_text
-        # )
+        preservation_score = calculate_core_token_preservation(
+            state["original_context"], rewritten_text
+        )
 
         current_understanding = extract_agent_understanding(
-                    rewritten_text, 
-                    state["question"]
-                )
-
-
+            rewritten_text,
+            state["question"],
+            state["seed"]
+        )
         agent_answer = current_understanding.get("answer", "CANNOT_ANSWER")
 
-        # if state["current_depth"] == 1:
-        #     # First hop: extract understanding from original context
-        #     original_understanding = extract_agent_understanding(
-        #         state["original_context"],
-        #         state["question"]
-        #     )
-        #     semantic_drift = measure_semantic_drift(
-        #         original_understanding,
-        #         current_understanding,
-        #         state["ground_truth_answer"]
-        #     )
-        # else:
-        #     # Subsequent hops: calculate based on answer correctness
-        #     # If answer changed from correct to wrong = drift occurred
-        #     semantic_drift = 0.0  # Will be calculated in app.py based on judge verdict
+        semantic_drift_metric = calculate_semantic_drift(
+            state["current_text"], rewritten_text
+        )
 
-        original_understanding = extract_agent_understanding(
-            state["original_context"],
-            state["question"]
+
+        global_drift_metric = calculate_semantic_drift(
+            state["original_context"], rewritten_text
         )
-        
-        semantic_drift = measure_semantic_drift(
-            original_understanding,
+
+        qa_recoverability = measure_qa_recoverability(
             current_understanding,
-            state["ground_truth_answer"]
+            state["all_valid_answers"],
+            state["is_impossible"]
         )
+
+        em_recoverability = measure_em_recoverability(
+            current_understanding,
+            state["all_valid_answers"],
+            state["is_impossible"]
+        )
+
+
+        _ans = current_understanding.get("answer", "").lower().strip()
+        fabricated = 1 if (state["is_impossible"] and "cannot_answer" not in _ans) else 0
+
 
         return {
             "current_text": rewritten_text,
             "history": [rewritten_text],
             "current_depth": state["current_depth"] + 1,
-            # "token_preservation_scores": [preservation_score],
-            "semantic_understanding_scores": [semantic_drift],
+            "lexical_preservation_scores": [preservation_score],
+            "semantic_drift_scores": [semantic_drift_metric],
+            "global_drift_scores": [global_drift_metric],
+            "qa_recoverability_scores": [qa_recoverability],
+            "em_recoverability_scores": [em_recoverability],
             "agent_answers": [agent_answer],
+            "fabrication_flags": [fabricated],
         }
 
     def should_continue(state: AgentState):
@@ -259,148 +338,101 @@ def create_pipeline():
 
 
 @st.cache_resource
-def load_ollama_judge():
-    return ChatOllama(model="gemma2:2b", temperature=0.1)
+def load_rater_A(seed: int):
+    return ChatOllama(model=RATER_MODEL_A, temperature=0.0, seed=seed)
 
+@st.cache_resource
+def load_rater_B(seed: int):
+    return ChatOllama(model=RATER_MODEL_B, temperature=0.0, seed=seed)
 
-def LLM_Evaluator_Judge_1(
-    original_text: str, final_text: str, is_impossible: bool = False
+faithfulness_rubric = (
+    "Decide whether the REWRITTEN passage is FAITHFUL to the ORIGINAL source. "
+    "It is FAITHFUL only if every factual claim it makes is supported by the "
+    "original, with no invented facts, no dropped facts that change the meaning, "
+    "and no distorted relationships between entities. If any claim is unsupported, "
+    "invented, or contradicts the source, it is HALLUCINATED. "
+    "Respond with ONLY one word: FAITHFUL or HALLUCINATED."
+)
+
+def rate_faithfulness_A(
+    original_text: str, final_text: str, is_impossible: bool = False, seed: int = 42
 ) -> int:
-    if is_impossible and "UNANSWERABLE" in final_text.upper():
-        return 1
 
-    judge_llm = load_ollama_judge()
+    rater_llm = load_rater_A(seed)
 
     system_prompt = SystemMessage(
-        content=(
-            "You are a rigorous factual accuracy evaluator. "
-            "Compare the 'Generated Text' against the 'Original Context'. "
-            "Determine if all factual claims in the generated text are supported by the original context. "
-            "Respond with ONLY 'ACCURATE' or 'HALLUCINATED'."
-        )
+        content=(f"You are a rigorous, literal-minded fact checker.\n\n{faithfulness_rubric}")
     )
     human_prompt = HumanMessage(content=f"""
             Original Context (Ground Truth):
             {original_text}
             Generated Text (To Evaluate):
             {final_text}    
-            Is the generated text factually accurate based on the original context?
-            Respond with ONLY: ACCURATE or HALLUCINATED
+            Is the rewritten passage FAITHFUL to the original source?
+Respond with ONLY: FAITHFUL or HALLUCINATED
         """)
     try:
-        response = judge_llm.invoke([system_prompt, human_prompt])
+        response = rater_llm.invoke([system_prompt, human_prompt])
         verdict = response.content.strip().upper()
-        return 1 if verdict == "ACCURATE" else 0
+        return 1 if ("FAITHFUL" in verdict and "HALLUCINATED" not in verdict) else 0
     except Exception as e:
         print(f"Error during evaluation: {e}")
         return 0
 
 
-def LLM_Evaluator_Judge_2(
-    original_text: str, final_text: str, is_impossible: bool = False
+def rate_faithfulness_B(
+    original_text: str, final_text: str, is_impossible: bool = False, seed: int = 42
 ) -> int:
-    if is_impossible and "UNANSWERABLE" in final_text.upper():
-        return 1
 
-    judge_llm = load_ollama_judge()
+    rater_llm = load_rater_B(seed)
 
     system_prompt = SystemMessage(
-        content=(
-            "You are a semantic fidelity evaluator. "
-            "Review if the 'Generated Text' preserves the key entities, relationships, and facts "
-            "from the 'Original Context'. Check for: (1) Missing key facts, "
-            "(2) Added false information, (3) Distorted relationships. "
-            "Respond with ONLY 'PRESERVES_FIDELITY' or 'LOSES_FIDELITY'."
-        )
+        content=(f"You are a careful, skeptical editor checking for unsupported claims.\n\n{faithfulness_rubric}")
     )
     human_prompt = HumanMessage(content=f"""
             Original Context (Ground Truth):
             {original_text}
             Generated Text (To Evaluate):
             {final_text}    
-            Does the generated text preserve the semantic fidelity of the original?
-            Respond with ONLY: PRESERVES_FIDELITY or LOSES_FIDELITY
+            Is the rewritten passage FAITHFUL to the original source?
+Respond with ONLY: FAITHFUL or HALLUCINATED
         """)
     try:
-        response = judge_llm.invoke([system_prompt, human_prompt])
+        response = rater_llm.invoke([system_prompt, human_prompt])
         verdict = response.content.strip().upper()
-        return 1 if verdict == "PRESERVES_FIDELITY" else 0
+        return 1 if ("FAITHFUL" in verdict and "HALLUCINATED" not in verdict) else 0
     except Exception as e:
         print(f"Error during evaluation: {e}")
         return 0
 
 
-def LLM_Evaluator_Judge_3_QA_Answerable(rewritten_context: str, question: str, expected_answer: str,is_impossible: bool = False) -> int:
-    """
-    Judge 3: Can the question still be answered from the rewritten context?
-    This directly validates task-relevant information preservation.
-    
-    Returns:
-        1 if the question can be answered from rewritten context
-        0 if the question cannot be answered (information lost)
-    """
-    if is_impossible:
-        judge_llm = load_ollama_judge()
-        
-        system_prompt = SystemMessage(
-            content=(
-                "You are a reading comprehension AI. Answer the question based ONLY on the provided context. "
-                "If the question cannot be answered from the context, respond with: 'UNANSWERABLE'"
-            )
-        )
-        
-        human_prompt = HumanMessage(
-            content=f"""Context: {rewritten_context}
 
-Question: {question}
+def select_checkpoints(depth: int) -> List[int]:
+    if depth <= 1:
+        return [1]
+    if depth <= 3:
+        return sorted({1, depth})
+    return sorted({1, (depth + 1) // 2, depth})
 
-Answer this question using ONLY information from the context above.
-If the question cannot be answered from the context, respond with: UNANSWERABLE"""
-        )
-        
-        try:
-            response = judge_llm.invoke([system_prompt, human_prompt])
-            judge_answer = response.content.strip().upper()
-            return 1 if "UNANSWERABLE" in judge_answer else 0
-        except Exception as e:
-            print(f"Error in Judge 3 for impossible question: {e}")
-            return 0
-    else:
-        judge_llm = load_ollama_judge()
-        
-        system_prompt = SystemMessage(
-            content=(
-                "You are a reading comprehension AI. Answer the question based ONLY on the provided context. "
-                "If you cannot answer from the context, respond with: 'CANNOT_ANSWER'. "
-                "Be concise and extract the key answer phrase only."
-            )
-        )
-        
-        human_prompt = HumanMessage(
-            content=f"""Context: {rewritten_context}
 
-            Question: {question}
-
-            Answer this question using ONLY information from the context above.
-            If the answer cannot be found in the context, respond with: CANNOT_ANSWER
-            Be concise - provide only the answer phrase, no explanation."""
-        )
-        
-        try:
-            response = judge_llm.invoke([system_prompt, human_prompt])
-            judge_answer = response.content.strip().lower()
-            expected = expected_answer.lower().strip()
-            
-            if "cannot_answer" in judge_answer:
-                return 0  
-            elif expected in judge_answer or any(word in judge_answer for word in expected.split()):
-                return 1  
-            else:
-                return 0  
-        except Exception as e:
-            print(f"Error in Judge 3: {e}")
-            return 0
-
+def rate_faithfulness_at_checkpoints(
+    original_context: str,
+    history: List[str],
+    is_impossible: bool = False,
+    seed: int = 42,
+) -> dict:
+    depth = len(history)
+    results = {}
+    for hop in select_checkpoints(depth):
+        text_at_hop = history[hop - 1]
+        a = rate_faithfulness_A(original_context, text_at_hop, is_impossible, seed)
+        b = rate_faithfulness_B(original_context, text_at_hop, is_impossible, seed)
+        results[hop] = {
+            "rater_a": a,
+            "rater_b": b,
+            "both_faithful": 1 if (a == 1 and b == 1) else 0,
+        }
+    return results
 
 
 def get_wordnet_pos(treebank_tag: str):
