@@ -15,10 +15,28 @@ from langgraph.graph import StateGraph, END
 import datetime
 import plotly.graph_objects as go
 
-from pipeline import AgentState, calculate_core_token_preservation, extract_content_tokens, create_pipeline, init_nltk, lemmatizer, rate_faithfulness_A, rate_faithfulness_B, calculate_semantic_drift, extract_agent_understanding, SEMANTIC_SHIFT_THRESHOLD, AGENT_MODEL, READER_MODEL, RATER_MODEL_A, RATER_MODEL_B, EMBEDDER_MODEL
-from pipeline import measure_qa_recoverability, rate_faithfulness_at_checkpoints, select_checkpoints
-from pipeline import measure_em_recoverability
-
+from pipeline import (
+    AgentState,
+    calculate_core_token_preservation,
+    extract_content_tokens,
+    create_pipeline,
+    init_nltk,
+    lemmatizer,
+    rate_faithfulness_A,
+    rate_faithfulness_B,
+    calculate_semantic_drift,
+    extract_agent_understanding,
+    SEMANTIC_SHIFT_THRESHOLD,
+    AGENT_MODEL,
+    READER_MODEL,
+    RATER_MODEL_A,
+    RATER_MODEL_B,
+    EMBEDDER_MODEL,
+    measure_qa_recoverability,
+    rate_faithfulness_at_checkpoints,
+    select_checkpoints,
+    measure_em_recoverability,
+)
 
 
 @st.cache_resource
@@ -68,23 +86,6 @@ if file_upload is not None:
 
         total_records = len(all_data)
 
-        # total_records = len(all_data)
-        # unique_contexts = {}
-        # for record in records:
-        #     title = record.get("title", "Unknown")
-        #     for para in record.get("paragraphs", []):
-        #         context_text = para.get("context", "").strip()
-        #         if context_text and context_text not in unique_contexts:
-        #             # Extract the first question ID just as a reference handle
-        #             first_qa_id = para.get("qas", [{'id': '0'}])[0].get("id", "")
-        #             unique_contexts[context_text] = {
-        #                 "source_text_id": f"{title}_{first_qa_id}",
-        #                 "topic": title,
-        #                 "context": context_text,
-        #             }
-
-        # all_data = list(unique_contexts.values())
-        # total_records = len(all_data)
         st.success(
             f"Dataset loaded Successfully! Total available records : {total_records}"
         )
@@ -102,10 +103,10 @@ if file_upload is not None:
                 step=1,
             )
             target_depth = st.selectbox("Pipeline Depth (n):", [1, 5, 10], index=0)
-            exp_temp = st.selectbox("Generation Temperature (T):", [0.1, 0.5, 0.9], index=1)
-            random_seed = st.number_input(
-                "Random Seed:", min_value=1, value=42
-                )
+            exp_temp = st.selectbox(
+                "Generation Temperature (T):", [0.1, 0.5, 0.9], index=1
+            )
+            random_seed = st.number_input("Random Seed:", min_value=1, value=42)
             generate_btn = st.button("Generate Experiment", type="primary")
 
         if generate_btn:
@@ -128,7 +129,9 @@ if file_upload is not None:
             for idx, row in enumerate(valid_sample):
                 status_text.text(f"Processing item {idx + 1} of {len(valid_sample)}...")
 
-                status_text.text(f"Processing {idx + 1}/{len(valid_sample)} - measuring n=0 baseline...")
+                status_text.text(
+                    f"Processing {idx + 1}/{len(valid_sample)} - measuring n=0 baseline..."
+                )
                 baseline_understanding = extract_agent_understanding(
                     row["context"], row["question"], int(random_seed)
                 )
@@ -145,7 +148,6 @@ if file_upload is not None:
                 )
                 baseline_answer = baseline_understanding.get("answer", "CANNOT_ANSWER")
 
-
                 initial_state = {
                     "original_context": row["context"],
                     "ground_truth_answer": row["ground_truth_answer"],
@@ -156,7 +158,7 @@ if file_upload is not None:
                     "current_depth": 0,
                     "target_depth": target_depth,
                     "temperature": exp_temp,
-                    "lexical_preservation_scores": [],
+                    "core_token_preservation_scores": [],
                     "seed": int(random_seed),
                     "semantic_drift_scores": [],
                     "global_drift_scores": [],
@@ -164,19 +166,22 @@ if file_upload is not None:
                     "em_recoverability_scores": [],
                     "agent_answers": [],
                     "fabrication_flags": [],
-                    "all_valid_answers" : row["all_valid_answers"],
+                    "all_valid_answers": row["all_valid_answers"],
                 }
 
                 progress_bar.progress((idx + 1) / len(valid_sample))
 
                 final_result = pipeline_app.invoke(initial_state)
-                scores = final_result.get("lexical_preservation_scores", [])
+                scores = final_result.get("core_token_preservation_scores", [])
                 semantic_scores = final_result.get("semantic_drift_scores", [])
                 global_scores = final_result.get("global_drift_scores", [])
-                qa_recoverability_scores = final_result.get("qa_recoverability_scores", [])
-                em_recoverability_scores = final_result.get("em_recoverability_scores", [])
+                qa_recoverability_scores = final_result.get(
+                    "qa_recoverability_scores", []
+                )
+                em_recoverability_scores = final_result.get(
+                    "em_recoverability_scores", []
+                )
                 fabrication_flags = final_result.get("fabrication_flags", [])
-
 
                 checkpoints = select_checkpoints(len(final_result.get("history", [])))
                 status_text.text(
@@ -189,9 +194,12 @@ if file_upload is not None:
                     int(random_seed),
                 )
                 final_hop = max(checkpoint_verdicts) if checkpoint_verdicts else 1
-                rater_a_faithful = checkpoint_verdicts.get(final_hop, {}).get("rater_a", 0)
-                rater_b_faithful = checkpoint_verdicts.get(final_hop, {}).get("rater_b", 0)
-
+                rater_a_faithful = checkpoint_verdicts.get(final_hop, {}).get(
+                    "rater_a", 0
+                )
+                rater_b_faithful = checkpoint_verdicts.get(final_hop, {}).get(
+                    "rater_b", 0
+                )
 
                 rater_a_verdicts.append(rater_a_faithful)
                 rater_b_verdicts.append(rater_b_faithful)
@@ -204,28 +212,34 @@ if file_upload is not None:
                     else 0.0
                 )
 
-
-                local_drift_mean = float(np.mean(semantic_scores)) if semantic_scores else 0.0
-                local_drift_sum = float(np.sum(semantic_scores)) if semantic_scores else 0.0
+                local_drift_mean = (
+                    float(np.mean(semantic_scores)) if semantic_scores else 0.0
+                )
+                local_drift_sum = (
+                    float(np.sum(semantic_scores)) if semantic_scores else 0.0
+                )
                 global_drift_final = float(global_scores[-1]) if global_scores else 0.0
-                global_drift_max = float(np.max(global_scores)) if global_scores else 0.0
+                global_drift_max = (
+                    float(np.max(global_scores)) if global_scores else 0.0
+                )
                 drift_cancellation = local_drift_sum - global_drift_final
 
-
                 final_qa_loss = (
-                    float(qa_recoverability_scores[-1]) if qa_recoverability_scores else 0.0
+                    float(qa_recoverability_scores[-1])
+                    if qa_recoverability_scores
+                    else 0.0
                 )
                 attributable_qa_loss = max(0.0, final_qa_loss - baseline_qa_loss)
                 baseline_recoverable = 1 if baseline_qa_loss == 0.0 else 0
 
-
                 final_em_loss = (
-                    float(em_recoverability_scores[-1]) if em_recoverability_scores else 0.0
+                    float(em_recoverability_scores[-1])
+                    if em_recoverability_scores
+                    else 0.0
                 )
                 attributable_em_loss = max(0.0, final_em_loss - baseline_em_loss)
 
                 em_f1_gap = attributable_em_loss - attributable_qa_loss
-     
 
                 if rater_a_faithful == 1 and rater_b_faithful == 1:
                     if global_drift_final > SEMANTIC_SHIFT_THRESHOLD:
@@ -238,7 +252,9 @@ if file_upload is not None:
                         if "UNANSWERABLE" in final_result["current_text"].upper():
                             failure_mode = "Correct Refusal (System Success)"
                         else:
-                            failure_mode = "Hallucination (fabricated answerable content)"
+                            failure_mode = (
+                                "Hallucination (fabricated answerable content)"
+                            )
                     else:
                         failure_mode = "Hallucination / Faithfulness Failure"
 
@@ -265,7 +281,7 @@ if file_upload is not None:
                         "scores_history": scores,
                         "semantic_scores_history": semantic_scores,
                         "global_drift_history": global_scores,
-                        "global_drift_final": global_drift_final,     
+                        "global_drift_final": global_drift_final,
                         "global_drift_max": global_drift_max,
                         "local_drift_mean": local_drift_mean,
                         "local_drift_sum": local_drift_sum,
@@ -274,22 +290,26 @@ if file_upload is not None:
                         "pipeline_depth": target_depth,
                         "temperature": exp_temp,
                         "iterations_completed": final_result["current_depth"],
-                        "avg_lexical_preservation": avg_score,
-                        "final_lexical_preservation": final_score,
+                        "avg_core_token_preservation": avg_score,
+                        "final_core_token_preservation": final_score,
                         "avg_lexical_loss": 1.0 - avg_score,
                         "final_lexical_loss": 1.0 - final_score,
-                        "baseline_qa_loss": baseline_qa_loss,          
+                        "baseline_qa_loss": baseline_qa_loss,
                         "baseline_answer": baseline_answer,
-                        "baseline_recoverable": baseline_recoverable,  
-                        "final_qa_loss": final_qa_loss,                
-                        "attributable_qa_loss": attributable_qa_loss,  
-                        "fabrication_history": fabrication_flags,         
+                        "baseline_recoverable": baseline_recoverable,
+                        "final_qa_loss": final_qa_loss,
+                        "attributable_qa_loss": attributable_qa_loss,
+                        "fabrication_history": fabrication_flags,
                         "fabricated_any_hop": int(any(fabrication_flags)),
                         "first_fabrication_hop": (
-                            fabrication_flags.index(1) + 1 if 1 in fabrication_flags else 0
+                            fabrication_flags.index(1) + 1
+                            if 1 in fabrication_flags
+                            else 0
                         ),
                         "fabrication_rate": (
-                            float(np.mean(fabrication_flags)) if fabrication_flags else 0.0
+                            float(np.mean(fabrication_flags))
+                            if fabrication_flags
+                            else 0.0
                         ),
                         "checkpoint_hops": list(checkpoint_verdicts.keys()),
                         "checkpoint_both_faithful": [
@@ -324,10 +344,12 @@ if file_upload is not None:
                         "is_impossible": row["is_impossible"],
                         "qa_metric": "SQuAD official EM + token-F1 (max over gold answers)",
                         "diagnosed_cause": failure_mode,
-                        "is_hallucination_failure": (1 if failure_mode.startswith("Hallucination") else 0                        ),
-                        # "is_rephrased": 1 if failure_mode == "Linguistic Rephrasing" else 0,
-                        "rater_agreement": 1 if rater_a_faithful == rater_b_faithful else 0,
-                        # "preservation_history": str(scores),
+                        "is_hallucination_failure": (
+                            1 if failure_mode.startswith("Hallucination") else 0
+                        ),
+                        "rater_agreement": (
+                            1 if rater_a_faithful == rater_b_faithful else 0
+                        ),
                     }
                 )
 
@@ -352,31 +374,53 @@ if file_upload is not None:
                 else 0.0
             )
 
-            agreement_list = [1 if v1 == v2 else 0 for v1, v2 in zip(rater_a_verdicts, rater_b_verdicts)]
-            avg_agreement_pct = (sum(agreement_list) / len(agreement_list)) * 100 if agreement_list else 0.0
+            agreement_list = [
+                1 if v1 == v2 else 0
+                for v1, v2 in zip(rater_a_verdicts, rater_b_verdicts)
+            ]
+            avg_agreement_pct = (
+                (sum(agreement_list) / len(agreement_list)) * 100
+                if agreement_list
+                else 0.0
+            )
 
             if math.isnan(cohens_kappa) or np.isnan(cohens_kappa):
                 cohens_kappa = 1.0 if avg_agreement_pct == 100.0 else 0.0
-           
+
             st.header("Pipeline Results")
             col_m1, col_m2, col_m3 = st.columns(3)
 
             with col_m1:
                 st.metric("Samples Processed", len(df))
             with col_m2:
-                st.metric("Pipeline Depth", int(df["pipeline_depth"].iloc[0]) if len(df) > 0 else 0)
+                st.metric(
+                    "Pipeline Depth",
+                    int(df["pipeline_depth"].iloc[0]) if len(df) > 0 else 0,
+                )
             with col_m3:
-                st.metric("Temperature", float(df["temperature"].iloc[0]) if len(df) > 0 else 0)
+                st.metric(
+                    "Temperature",
+                    float(df["temperature"].iloc[0]) if len(df) > 0 else 0,
+                )
             st.write("---")
 
             col_m4, col_m5, col_m6 = st.columns(3)
 
             with col_m4:
-                st.metric("Avg Lexical Preservation", f"{df['avg_lexical_preservation'].mean():.2%}")
+                st.metric(
+                    "Avg Core-Token Preservation",
+                    f"{df['avg_core_token_preservation'].mean():.2%}",
+                )
             with col_m5:
-                st.metric("Avg Global Semantic Drift", f"{df['global_drift_final'].mean():.2%}")
+                st.metric(
+                    "Avg Global Semantic Drift",
+                    f"{df['global_drift_final'].mean():.2%}",
+                )
             with col_m6:
-                st.metric("Avg QA Recoverability Loss", f"{df['avg_qa_recoverability'].mean():.2%}")
+                st.metric(
+                    "Avg QA Recoverability Loss",
+                    f"{df['avg_qa_recoverability'].mean():.2%}",
+                )
 
             st.write("---")
 
@@ -385,26 +429,43 @@ if file_upload is not None:
             with col_m8:
                 st.metric("Rater A-B Agreement", f"{df['rater_agreement'].mean():.2%}")
             with col_m9:
-                st.metric("Cohen's κ (inter-rater, faithfulness)", f"{cohens_kappa:.4f}")
+                st.metric(
+                    "Cohen's κ (inter-rater, faithfulness)", f"{cohens_kappa:.4f}"
+                )
             with col_m10:
-                hallucination_rate = df["is_hallucination_failure"].mean() if len(df) > 0 else 0.0
+                hallucination_rate = (
+                    df["is_hallucination_failure"].mean() if len(df) > 0 else 0.0
+                )
                 st.metric("Hallucination Rate", f"{hallucination_rate:.1%}")
 
             st.markdown("#### Hallucination Accumulation by Depth")
 
-            imp_df = df[df["is_impossible"] == True] if "is_impossible" in df.columns else df.iloc[0:0]
+            imp_df = (
+                df[df["is_impossible"] == True]
+                if "is_impossible" in df.columns
+                else df.iloc[0:0]
+            )
             try:
                 if len(imp_df) > 0:
                     max_hops = int(imp_df["iterations_completed"].max())
                     fab_rows = []
                     for hop in range(max_hops):
-                        vals = [h[hop] for h in imp_df["fabrication_history"]
-                                if isinstance(h, list) and len(h) > hop]
+                        vals = [
+                            h[hop]
+                            for h in imp_df["fabrication_history"]
+                            if isinstance(h, list) and len(h) > hop
+                        ]
                         if vals:
-                            fab_rows.append({"Hop": hop + 1,
-                                             "Fabrication Rate (%)": float(np.mean(vals)) * 100})
+                            fab_rows.append(
+                                {
+                                    "Hop": hop + 1,
+                                    "Fabrication Rate (%)": float(np.mean(vals)) * 100,
+                                }
+                            )
                     if fab_rows:
-                        st.line_chart(pd.DataFrame(fab_rows).set_index("Hop"), color=["#dc3545"])
+                        st.line_chart(
+                            pd.DataFrame(fab_rows).set_index("Hop"), color=["#dc3545"]
+                        )
                         st.caption(
                             "Proportion of UNANSWERABLE items where the agent invented an answer "
                             "instead of refusing, measured at each hop. This is a ground-truth-anchored "
@@ -413,13 +474,19 @@ if file_upload is not None:
                         )
                     h1, h2 = st.columns(2)
                     with h1:
-                        st.metric("Items Fabricated at Some Hop",
-                                  f"{imp_df['fabricated_any_hop'].mean():.1%}")
+                        st.metric(
+                            "Items Fabricated at Some Hop",
+                            f"{imp_df['fabricated_any_hop'].mean():.1%}",
+                        )
                     with h2:
-                        first = imp_df[imp_df["first_fabrication_hop"] > 0]["first_fabrication_hop"]
-                        st.metric("Mean First Fabrication Hop",
-                                  f"{first.mean():.1f}" if len(first) else "n/a",
-                                  help="How deep into the chain hallucination typically first appears.")
+                        first = imp_df[imp_df["first_fabrication_hop"] > 0][
+                            "first_fabrication_hop"
+                        ]
+                        st.metric(
+                            "Mean First Fabrication Hop",
+                            f"{first.mean():.1f}" if len(first) else "n/a",
+                            help="How deep into the chain hallucination typically first appears.",
+                        )
                 else:
                     st.info(
                         "No unanswerable (is_impossible) items in this sample, so fabrication rate "
@@ -428,15 +495,19 @@ if file_upload is not None:
                     )
 
                 cp_rows = {}
-                for hops, faiths in zip(df["checkpoint_hops"], df["checkpoint_both_faithful"]):
+                for hops, faiths in zip(
+                    df["checkpoint_hops"], df["checkpoint_both_faithful"]
+                ):
                     if isinstance(hops, list) and isinstance(faiths, list):
                         for h, f in zip(hops, faiths):
                             cp_rows.setdefault(h, []).append(f)
                 if cp_rows:
-                    cp_df = pd.DataFrame([
-                        {"Hop": h, "Hallucination Rate (%)": (1 - np.mean(v)) * 100}
-                        for h, v in sorted(cp_rows.items())
-                    ]).set_index("Hop")
+                    cp_df = pd.DataFrame(
+                        [
+                            {"Hop": h, "Hallucination Rate (%)": (1 - np.mean(v)) * 100}
+                            for h, v in sorted(cp_rows.items())
+                        ]
+                    ).set_index("Hop")
                     st.line_chart(cp_df, color=["#fd7e14"])
                     st.caption(
                         "Rater-judged hallucination rate at checkpoint hops (both raters must agree "
@@ -450,32 +521,52 @@ if file_upload is not None:
                 max_h = int(df["iterations_completed"].max())
                 rows = []
                 for hop in range(max_h):
-                    f1v = [r[hop] for r in df["qa_recoverability_history"]
-                           if isinstance(r, list) and len(r) > hop]
-                    emv = [r[hop] for r in df["em_recoverability_history"]
-                           if isinstance(r, list) and len(r) > hop]
+                    f1v = [
+                        r[hop]
+                        for r in df["qa_recoverability_history"]
+                        if isinstance(r, list) and len(r) > hop
+                    ]
+                    emv = [
+                        r[hop]
+                        for r in df["em_recoverability_history"]
+                        if isinstance(r, list) and len(r) > hop
+                    ]
                     if f1v or emv:
-                        rows.append({
-                            "Hop": hop + 1,
-                            "EM loss (strict) %": (float(np.mean(emv)) * 100) if emv else None,
-                            "F1 loss (lenient) %": (float(np.mean(f1v)) * 100) if f1v else None,
-                        })
+                        rows.append(
+                            {
+                                "Hop": hop + 1,
+                                "EM loss (strict) %": (
+                                    (float(np.mean(emv)) * 100) if emv else None
+                                ),
+                                "F1 loss (lenient) %": (
+                                    (float(np.mean(f1v)) * 100) if f1v else None
+                                ),
+                            }
+                        )
                 if rows:
                     st.line_chart(pd.DataFrame(rows).set_index("Hop"))
 
                 g1, g2, g3 = st.columns(3)
                 with g1:
-                    st.metric("Attributable EM Loss", f"{df['attributable_em_loss'].mean():.1%}")
+                    st.metric(
+                        "Attributable EM Loss",
+                        f"{df['attributable_em_loss'].mean():.1%}",
+                    )
                 with g2:
-                    st.metric("Attributable F1 Loss", f"{df['attributable_qa_loss'].mean():.1%}")
+                    st.metric(
+                        "Attributable F1 Loss",
+                        f"{df['attributable_qa_loss'].mean():.1%}",
+                    )
                 with g3:
                     st.metric(
                         "EM-F1 Gap",
                         f"{df['em_f1_gap'].mean():.1%}",
-                        help=("EM loss minus F1 loss, both baseline-corrected. A LARGE gap means "
-                              "answers were reworded but their content survived (lexical drift, "
-                              "meaning preserved). A gap near ZERO means EM and F1 fell together, "
-                              "i.e. the answer content itself was lost (semantic failure)."),
+                        help=(
+                            "EM loss minus F1 loss, both baseline-corrected. A LARGE gap means "
+                            "answers were reworded but their content survived (lexical drift, "
+                            "meaning preserved). A gap near ZERO means EM and F1 fell together, "
+                            "i.e. the answer content itself was lost (semantic failure)."
+                        ),
                     )
 
                 gap = df["em_f1_gap"].mean()
@@ -493,7 +584,6 @@ if file_upload is not None:
                     )
             except Exception as e:
                 st.warning(f"Could not render EM vs F1 comparison: {e}")
-    
 
             st.markdown("### Statistical Summary")
 
@@ -503,9 +593,11 @@ if file_upload is not None:
                 st.metric(
                     "Reader Floor (n=0)",
                     f"{df['baseline_qa_loss'].mean():.1%}",
-                    help=("Answer loss measured on the UNTOUCHED original context. This is the "
-                          "reader model's own error rate, not drift. Any loss below this level "
-                          "cannot be attributed to the pipeline."),
+                    help=(
+                        "Answer loss measured on the UNTOUCHED original context. This is the "
+                        "reader model's own error rate, not drift. Any loss below this level "
+                        "cannot be attributed to the pipeline."
+                    ),
                 )
             with b2:
                 st.metric("Total Loss (final hop)", f"{df['final_qa_loss'].mean():.1%}")
@@ -523,23 +615,33 @@ if file_upload is not None:
                     "Consider a stronger reader model before drawing conclusions."
                 )
 
-
-
             st.markdown("#### Drift Accumulation Curve (Local vs Global)")
             try:
                 max_hops = int(df["iterations_completed"].max())
                 if max_hops > 0:
                     curve_rows = []
                     for hop in range(max_hops):
-                        g_vals = [r[hop] for r in df["global_drift_history"]
-                                  if isinstance(r, list) and len(r) > hop]
-                        l_vals = [r[hop] for r in df["semantic_scores_history"]
-                                  if isinstance(r, list) and len(r) > hop]
-                        curve_rows.append({
-                            "Hop": hop + 1,
-                            "Global drift (vs original)": float(np.mean(g_vals)) if g_vals else None,
-                            "Local drift (vs previous hop)": float(np.mean(l_vals)) if l_vals else None,
-                        })
+                        g_vals = [
+                            r[hop]
+                            for r in df["global_drift_history"]
+                            if isinstance(r, list) and len(r) > hop
+                        ]
+                        l_vals = [
+                            r[hop]
+                            for r in df["semantic_scores_history"]
+                            if isinstance(r, list) and len(r) > hop
+                        ]
+                        curve_rows.append(
+                            {
+                                "Hop": hop + 1,
+                                "Global drift (vs original)": (
+                                    float(np.mean(g_vals)) if g_vals else None
+                                ),
+                                "Local drift (vs previous hop)": (
+                                    float(np.mean(l_vals)) if l_vals else None
+                                ),
+                            }
+                        )
                     curve_df = pd.DataFrame(curve_rows).set_index("Hop")
                     st.line_chart(curve_df)
                     st.caption(
@@ -550,21 +652,28 @@ if file_upload is not None:
 
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        st.metric("Global Drift (final hop)", f"{df['global_drift_final'].mean():.2%}")
+                        st.metric(
+                            "Global Drift (final hop)",
+                            f"{df['global_drift_final'].mean():.2%}",
+                        )
                     with c2:
-                        st.metric("Cumulative Local Drift", f"{df['local_drift_sum'].mean():.2%}")
+                        st.metric(
+                            "Cumulative Local Drift",
+                            f"{df['local_drift_sum'].mean():.2%}",
+                        )
                     with c3:
                         st.metric(
                             "Drift Cancellation",
                             f"{df['drift_cancellation'].mean():.2%}",
-                            help=("Cumulative local drift minus global drift. A large positive value "
-                                  "means the chain wanders but returns toward the same semantic region "
-                                  "(supporting the low-dimensional manifold claim of Arbuzov et al., 2025). "
-                                  "A value near zero means drift is monotonic and irreversible."),
+                            help=(
+                                "Cumulative local drift minus global drift. A large positive value "
+                                "means the chain wanders but returns toward the same semantic region "
+                                "(supporting the low-dimensional manifold claim of Arbuzov et al., 2025). "
+                                "A value near zero means drift is monotonic and irreversible."
+                            ),
                         )
             except Exception as e:
                 st.warning(f"Could not render drift curve: {e}")
-
 
             stat_cols = st.columns(2)
 
@@ -580,7 +689,9 @@ if file_upload is not None:
 
             st.write("---")
             st.subheader("Agent History & Audit Viewer")
-            st.write("Select a sample below to inspect exact propagation hops and ground-truth alignment:")
+            st.write(
+                "Select a sample below to inspect exact propagation hops and ground-truth alignment:"
+            )
 
             selected_sample_id = st.selectbox(
                 "Select Sample ID:", options=df["sample_id"].tolist()
@@ -592,14 +703,22 @@ if file_upload is not None:
                 with c1:
                     st.markdown(f"**Topic:** {sample_data['topic']}")
                 with c2:
-                    st.markdown(f"**Rater A (faithfulness):** {'Faithful' if sample_data['rater_a_faithful'] == 1 else 'Hallucinated'}")
+                    st.markdown(
+                        f"**Rater A (faithfulness):** {'Faithful' if sample_data['rater_a_faithful'] == 1 else 'Hallucinated'}"
+                    )
                 with c3:
-                    st.markdown(f"**Rater B (faithfulness):** {'Faithful' if sample_data['rater_b_faithful'] == 1 else 'Hallucinated'}")
+                    st.markdown(
+                        f"**Rater B (faithfulness):** {'Faithful' if sample_data['rater_b_faithful'] == 1 else 'Hallucinated'}"
+                    )
 
                 st.markdown("### Benchmark Reference Data")
-                st.info(f"**Question Asked:** {sample_data['question']}\n\n**Gold Standard Answer:** {sample_data['ground_truth']}\n\n**All Valid Answers:** {sample_data['all_valid_answers']}")
+                st.info(
+                    f"**Question Asked:** {sample_data['question']}\n\n**Gold Standard Answer:** {sample_data['ground_truth']}\n\n**All Valid Answers:** {sample_data['all_valid_answers']}"
+                )
 
-                with st.expander("Background SQuAD Context (Input at Hop 0)", expanded=False):
+                with st.expander(
+                    "Background SQuAD Context (Input at Hop 0)", expanded=False
+                ):
                     st.write(sample_data["original_text_full"])
 
                 st.markdown("### Agent Chain Propagation History")
@@ -622,7 +741,10 @@ if file_upload is not None:
                     qa_label = qa_labels.get(qa_score, f"{qa_score:.1f}")
 
                     is_expanded = depth == len(text_history)
-                    expander_title = (f"Hop {depth} Output — Semantic Similarity: {similarity:.1%} | "  f"Semantic Drift: {drift:.1%} | Answer Recoverability: {qa_label}")
+                    expander_title = (
+                        f"Hop {depth} Output — Semantic Similarity: {similarity:.1%} | "
+                        f"Semantic Drift: {drift:.1%} | Answer Recoverability: {qa_label}"
+                    )
                     if depth == len(text_history):
                         expander_title = "FINAL OUTPUT — " + expander_title
 
@@ -639,7 +761,9 @@ if file_upload is not None:
                     }
                 ).set_index("Hop")
                 st.line_chart(chart_data, color=["#ffc107"])
-                st.caption("Local (hop-to-hop) embedding drift. See the Global Drift curve for cumulative divergence from the source.")
+                st.caption(
+                    "Local (hop-to-hop) embedding drift. See the Global Drift curve for cumulative divergence from the source."
+                )
 
                 qa_chart_data = pd.DataFrame(
                     {
@@ -680,11 +804,15 @@ if file_upload is not None:
                 agreement_counts = [agree.sum(), (~agree).sum()]
                 agreement_labels = ["Agree", "Disagree"]
 
-                fig = go.Figure(data=[go.Pie(
+                fig = go.Figure(
+                    data=[
+                        go.Pie(
                             labels=agreement_labels,
                             values=agreement_counts,
                             marker=dict(colors=["#28a745", "#dc3545"]),
-                )])
+                        )
+                    ]
+                )
                 fig.update_layout(height=300, showlegend=True)
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -692,32 +820,44 @@ if file_upload is not None:
                 st.write("**Failure Mode Distribution**")
                 failure_counts = df["diagnosed_cause"].value_counts()
 
-                fig = go.Figure(data=[go.Pie(
+                fig = go.Figure(
+                    data=[
+                        go.Pie(
                             labels=failure_counts.index,
                             values=failure_counts.values,
-                            marker=dict(colors=["#0d6efd", "#198754", "#fd7e14", "#6c757d"]),
-                )])
+                            marker=dict(
+                                colors=["#0d6efd", "#198754", "#fd7e14", "#6c757d"]
+                            ),
+                        )
+                    ]
+                )
                 fig.update_layout(height=300, showlegend=True)
                 st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("### Rater Verdict Heatmap (Sample x Rater Agreement)")
 
-            heatmap_df = df[["topic", "rater_a_faithful", "rater_b_faithful",
-                            "diagnosed_cause"]].copy()
+            heatmap_df = df[
+                ["topic", "rater_a_faithful", "rater_b_faithful", "diagnosed_cause"]
+            ].copy()
             heatmap_df["All_Agree"] = (
                 heatmap_df["rater_a_faithful"] == heatmap_df["rater_b_faithful"]
             ).astype(int)
-            heatmap_df = heatmap_df.rename(columns={
+            heatmap_df = heatmap_df.rename(
+                columns={
                     "rater_a_faithful": "Rater A (Faithful)",
                     "rater_b_faithful": "Rater B (Faithful)",
                     "All_Agree": "All Agree",
                     "diagnosed_cause": "Failure Mode",
-            })
+                }
+            )
 
             st.dataframe(
-                heatmap_df.style.map(lambda x: ("background-color: #28a745; color: white"
-                        if x == 1 else "background-color: #dc3545; color: white"  
-                        if x == 0 else "")
+                heatmap_df.style.map(
+                    lambda x: (
+                        "background-color: #28a745; color: white"
+                        if x == 1
+                        else "background-color: #dc3545; color: white" if x == 0 else ""
+                    )
                 ),
                 use_container_width=True,
                 height=400,
@@ -731,7 +871,7 @@ if file_upload is not None:
                 "question",
                 "ground_truth",
                 "final_text",
-                "avg_lexical_preservation",
+                "avg_core_token_preservation",
                 "global_drift_final",
                 "avg_qa_recoverability",
                 "rater_a_faithful",
@@ -742,21 +882,35 @@ if file_upload is not None:
 
             st.write("---")
             st.subheader("Export Results")
-            run_tag = df["run_id"].iloc[0] if "run_id" in df.columns and len(df) else "run"
+            run_tag = (
+                df["run_id"].iloc[0] if "run_id" in df.columns and len(df) else "run"
+            )
             csv = df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="Download Pipeline Results (CSV)",
                 data=csv,
-                file_name=(f"drift_d{target_depth}_T{exp_temp}_seed{int(random_seed)}_{run_tag}.csv"),
+                file_name=(
+                    f"drift_d{target_depth}_T{exp_temp}_seed{int(random_seed)}_{run_tag}.csv"
+                ),
                 mime="text/csv",
             )
 
             with st.expander("Run manifest (provenance recorded in this CSV)"):
                 manifest_cols = [
-                    "run_id", "run_timestamp", "dataset", "dataset_file", "sample_size_n",
-                    "pipeline_depth", "agent_temperature", "random_seed",
-                    "agent_model", "reader_model", "rater_a_model", "rater_b_model",
-                    "embedder_model", "qa_metric",
+                    "run_id",
+                    "run_timestamp",
+                    "dataset",
+                    "dataset_file",
+                    "sample_size_n",
+                    "pipeline_depth",
+                    "agent_temperature",
+                    "random_seed",
+                    "agent_model",
+                    "reader_model",
+                    "rater_a_model",
+                    "rater_b_model",
+                    "embedder_model",
+                    "qa_metric",
                 ]
                 present = [c for c in manifest_cols if c in df.columns]
                 st.table(df[present].iloc[0].rename("value").to_frame())

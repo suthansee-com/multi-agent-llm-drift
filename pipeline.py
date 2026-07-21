@@ -51,6 +51,7 @@ def get_embedder():
 
 class AgentState(TypedDict):
     """A dictionary representing the state of an agent."""
+
     original_context: str
     current_text: str
     question: str
@@ -59,7 +60,7 @@ class AgentState(TypedDict):
     current_depth: int
     target_depth: int
     temperature: float
-    lexical_preservation_scores: Annotated[List[float], operator.add]
+    core_token_preservation_scores: Annotated[List[float], operator.add]
     is_impossible: bool
     semantic_drift_scores: Annotated[List[float], operator.add]
     global_drift_scores: Annotated[List[float], operator.add]
@@ -71,7 +72,6 @@ class AgentState(TypedDict):
     all_valid_answers: List[str]
 
 
-
 def calculate_core_token_preservation(original: str, current: str) -> float:
     """Calculates the preservation score of core tokens between the original and current text."""
     original_tokens = extract_content_tokens(original)
@@ -79,7 +79,6 @@ def calculate_core_token_preservation(original: str, current: str) -> float:
     if not original_tokens:
         return 0.0
     overlap = original_tokens.intersection(current_tokens)
-    # union = original_tokens.union(current_tokens)
     return float(len(overlap) / len(original_tokens))
 
 
@@ -110,21 +109,20 @@ def extract_agent_understanding(context: str, question: str, seed: int = 42) -> 
     """
     Extract what the agent understands from the context.
     This is the core of semantic drift measurement.
-    
+
     Returns:
         Dictionary with key_facts, understanding, and answer
     """
     llm = ChatOllama(model=READER_MODEL, temperature=0.0, seed=seed)
-    
+
     system_prompt = SystemMessage(
         content=(
             "You are a careful reader. Analyze the provided text and extract key information.\n"
             "Be precise and concise in your responses."
         )
     )
-    
-    human_prompt = HumanMessage(
-        content=f"""Text: {context}
+
+    human_prompt = HumanMessage(content=f"""Text: {context}
  
 Question: {question}
  
@@ -134,36 +132,32 @@ Please provide:
  
 Format your response exactly as:
 KEY_FACTS: [your facts]
-ANSWER: [your answer]"""
-    )
-    
+ANSWER: [your answer]""")
+
     try:
         response = llm.invoke([system_prompt, human_prompt])
         response_text = response.content.strip()
-        
-        understanding = {
-            "full_response": response_text,
-            "key_facts": "",
-            "answer": ""
-        }
-        
+
+        understanding = {"full_response": response_text, "key_facts": "", "answer": ""}
+
         if "KEY_FACTS:" in response_text:
             facts_start = response_text.find("KEY_FACTS:") + len("KEY_FACTS:")
-            facts_end = response_text.find("ANSWER:") if "ANSWER:" in response_text else len(response_text)
+            facts_end = (
+                response_text.find("ANSWER:")
+                if "ANSWER:" in response_text
+                else len(response_text)
+            )
             understanding["key_facts"] = response_text[facts_start:facts_end].strip()
-        
+
         if "ANSWER:" in response_text:
             answer_start = response_text.find("ANSWER:") + len("ANSWER:")
             understanding["answer"] = response_text[answer_start:].strip()
-        
+
         return understanding
     except Exception as e:
         print(f"Error extracting understanding: {e}")
-        return {
-            "full_response": "",
-            "key_facts": "",
-            "answer": ""
-        }
+        return {"full_response": "", "key_facts": "", "answer": ""}
+
 
 def normalize_answer(s: str) -> str:
     s = s.lower()
@@ -184,7 +178,7 @@ def squad_f1(prediction: str, ground_truth: str) -> float:
     recall = num_same / len(gt_tokens)
     return 2 * precision * recall / (precision + recall)
 
-    
+
 def squad_em(prediction: str, ground_truth: str) -> float:
     """SQuAD official exact match."""
     return float(normalize_answer(prediction) == normalize_answer(ground_truth))
@@ -253,7 +247,9 @@ def create_pipeline():
     """Creating a pipeline."""
 
     def rewrite_node(state: AgentState):
-        llm = ChatOllama(model=AGENT_MODEL, temperature=state["temperature"], seed=state["seed"])
+        llm = ChatOllama(
+            model=AGENT_MODEL, temperature=state["temperature"], seed=state["seed"]
+        )
         system_prompt = SystemMessage(
             content=(
                 "You are a strict text-processing relay agent. Rewrite the provided text "
@@ -271,16 +267,14 @@ def create_pipeline():
 
         response = llm.invoke([system_prompt, human_prompt])
         raw_text = response.content.strip()
-        rewritten_text = clean_llm_artifacts(raw_text)
+        rewritten_text = clean_llm_artefacts(raw_text)
 
         preservation_score = calculate_core_token_preservation(
             state["original_context"], rewritten_text
         )
 
         current_understanding = extract_agent_understanding(
-            rewritten_text,
-            state["question"],
-            state["seed"]
+            rewritten_text, state["question"], state["seed"]
         )
         agent_answer = current_understanding.get("answer", "CANNOT_ANSWER")
 
@@ -288,33 +282,28 @@ def create_pipeline():
             state["current_text"], rewritten_text
         )
 
-
         global_drift_metric = calculate_semantic_drift(
             state["original_context"], rewritten_text
         )
 
         qa_recoverability = measure_qa_recoverability(
-            current_understanding,
-            state["all_valid_answers"],
-            state["is_impossible"]
+            current_understanding, state["all_valid_answers"], state["is_impossible"]
         )
 
         em_recoverability = measure_em_recoverability(
-            current_understanding,
-            state["all_valid_answers"],
-            state["is_impossible"]
+            current_understanding, state["all_valid_answers"], state["is_impossible"]
         )
 
-
         _ans = current_understanding.get("answer", "").lower().strip()
-        fabricated = 1 if (state["is_impossible"] and "cannot_answer" not in _ans) else 0
-
+        fabricated = (
+            1 if (state["is_impossible"] and "cannot_answer" not in _ans) else 0
+        )
 
         return {
             "current_text": rewritten_text,
             "history": [rewritten_text],
             "current_depth": state["current_depth"] + 1,
-            "lexical_preservation_scores": [preservation_score],
+            "core_token_preservation_scores": [preservation_score],
             "semantic_drift_scores": [semantic_drift_metric],
             "global_drift_scores": [global_drift_metric],
             "qa_recoverability_scores": [qa_recoverability],
@@ -341,9 +330,11 @@ def create_pipeline():
 def load_rater_A(seed: int):
     return ChatOllama(model=RATER_MODEL_A, temperature=0.0, seed=seed)
 
+
 @st.cache_resource
 def load_rater_B(seed: int):
     return ChatOllama(model=RATER_MODEL_B, temperature=0.0, seed=seed)
+
 
 faithfulness_rubric = (
     "Decide whether the REWRITTEN passage is FAITHFUL to the ORIGINAL source. "
@@ -354,6 +345,7 @@ faithfulness_rubric = (
     "Respond with ONLY one word: FAITHFUL or HALLUCINATED."
 )
 
+
 def rate_faithfulness_A(
     original_text: str, final_text: str, is_impossible: bool = False, seed: int = 42
 ) -> int:
@@ -361,7 +353,9 @@ def rate_faithfulness_A(
     rater_llm = load_rater_A(seed)
 
     system_prompt = SystemMessage(
-        content=(f"You are a rigorous, literal-minded fact checker.\n\n{faithfulness_rubric}")
+        content=(
+            f"You are a rigorous, literal-minded fact checker.\n\n{faithfulness_rubric}"
+        )
     )
     human_prompt = HumanMessage(content=f"""
             Original Context (Ground Truth):
@@ -387,7 +381,9 @@ def rate_faithfulness_B(
     rater_llm = load_rater_B(seed)
 
     system_prompt = SystemMessage(
-        content=(f"You are a careful, skeptical editor checking for unsupported claims.\n\n{faithfulness_rubric}")
+        content=(
+            f"You are a careful, skeptical editor checking for unsupported claims.\n\n{faithfulness_rubric}"
+        )
     )
     human_prompt = HumanMessage(content=f"""
             Original Context (Ground Truth):
@@ -404,7 +400,6 @@ Respond with ONLY: FAITHFUL or HALLUCINATED
     except Exception as e:
         print(f"Error during evaluation: {e}")
         return 0
-
 
 
 def select_checkpoints(depth: int) -> List[int]:
@@ -446,7 +441,7 @@ def get_wordnet_pos(treebank_tag: str):
         return wordnet.NOUN
 
 
-def clean_llm_artifacts(text: str) -> str:
+def clean_llm_artefacts(text: str) -> str:
     text = re.sub(r"```[\s\S]*?```", "", text)
     text = re.sub(r"`[^`]+`", "", text)
     text = re.sub(r"\n*Note:.*$", "", text, flags=re.IGNORECASE | re.DOTALL)
