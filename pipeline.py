@@ -66,6 +66,7 @@ class AgentState(TypedDict):
     global_drift_scores: Annotated[List[float], operator.add]
     qa_recoverability_scores: Annotated[List[float], operator.add]
     em_recoverability_scores: Annotated[List[float], operator.add]
+    qa_recall_loss_scores: Annotated[List[float], operator.add]
     agent_answers: Annotated[List[str], operator.add]
     fabrication_flags: Annotated[List[int], operator.add]
     seed: int
@@ -117,22 +118,24 @@ def extract_agent_understanding(context: str, question: str, seed: int = 42) -> 
 
     system_prompt = SystemMessage(
         content=(
-            "You are a careful reader. Analyze the provided text and extract key information.\n"
-            "Be precise and concise in your responses."
+            "You are a precise extractive question-answering system.\n"
+            "You answer only with short spans copied verbatim from the passage."
         )
     )
 
     human_prompt = HumanMessage(content=f"""Text: {context}
- 
+
 Question: {question}
- 
-Please provide:
-1. KEY_FACTS: List the key facts from the text needed to answer the question
-2. ANSWER: Answer the question directly from the text, or say CANNOT_ANSWER
- 
+
+Instructions:
+- Answer with the SHORTEST span copied EXACTLY from the text above.
+- Copy the wording verbatim. Do not paraphrase or write a full sentence.
+- Do not restate the question or add explanation.
+- If the text does not contain the answer, respond with exactly: CANNOT_ANSWER
+
 Format your response exactly as:
-KEY_FACTS: [your facts]
-ANSWER: [your answer]""")
+KEY_FACTS: [facts from the text relevant to the question]
+ANSWER: [span only]""")
 
     try:
         response = llm.invoke([system_prompt, human_prompt])
@@ -231,6 +234,41 @@ def measure_qa_recoverability(
     best_f1 = max(squad_f1(current_answer, g) for g in golds)
     return 1.0 - best_f1
 
+def squad_recall(prediction: str, ground_truth: str) -> float:
+    pred_tokens = normalize_answer(prediction).split()
+    gt_tokens = normalize_answer(ground_truth).split()
+    if not gt_tokens:
+        return 1.0 if not pred_tokens else 0.0
+    common = Counter(pred_tokens) & Counter(
+        gt_tokens
+    )  # Counter, not collections.Counter
+    overlap = sum(common.values())
+    return overlap / len(gt_tokens) if overlap else 0.0
+
+
+def measure_qa_recall_loss(
+    current_understanding: dict,
+    expected_answers,
+    is_impossible: bool = False,
+) -> float:
+    current_answer = current_understanding.get("answer", "").lower().strip()
+
+    if is_impossible:
+        return 0.0 if "cannot_answer" in current_answer else 1.0
+
+    if "cannot_answer" in current_answer:
+        return 1.0
+
+    if isinstance(expected_answers, str):
+        expected_answers = [expected_answers]
+
+    golds = [g for g in (expected_answers or []) if isinstance(g, str) and g.strip()]
+    if not golds:
+        return 1.0
+
+    best_recall = max(squad_recall(current_answer, g) for g in golds)
+    return 1.0 - best_recall
+
 
 def calculate_semantic_drift(previous_text: str, current_text: str) -> float:
     try:
@@ -294,6 +332,10 @@ def create_pipeline():
             current_understanding, state["all_valid_answers"], state["is_impossible"]
         )
 
+        qa_recall_loss = measure_qa_recall_loss(
+            current_understanding, state["all_valid_answers"], state["is_impossible"]
+        )
+
         _ans = current_understanding.get("answer", "").lower().strip()
         fabricated = (
             1 if (state["is_impossible"] and "cannot_answer" not in _ans) else 0
@@ -308,6 +350,7 @@ def create_pipeline():
             "global_drift_scores": [global_drift_metric],
             "qa_recoverability_scores": [qa_recoverability],
             "em_recoverability_scores": [em_recoverability],
+            "qa_recall_loss_scores" : [qa_recall_loss],
             "agent_answers": [agent_answer],
             "fabrication_flags": [fabricated],
         }
