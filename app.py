@@ -36,6 +36,7 @@ from pipeline import (
     rate_faithfulness_at_checkpoints,
     select_checkpoints,
     measure_em_recoverability,
+    measure_qa_recall_loss,
 )
 
 
@@ -64,6 +65,8 @@ if file_upload is not None:
             title = record.get("title", "Unknown")
             for para in record.get("paragraphs", []):
                 context_text = para.get("context", "")
+                if not context_text:
+                    continue
                 for qa in para.get("qas", []):
                     answers_list = [a.get("text", "") for a in qa.get("answers", [])]
                     is_imp = qa.get("is_impossible", False)
@@ -83,6 +86,7 @@ if file_upload is not None:
                             "is_impossible": is_imp,
                         }
                     )
+        all_data.sort(key=lambda r: r["source_text_id"])
 
         total_records = len(all_data)
 
@@ -95,11 +99,18 @@ if file_upload is not None:
         col1, col2 = st.columns([1, 2])
 
         with col1:
-            sample_size = st.number_input(
-                "Sample Size (N):",
-                min_value=1,
-                max_value=min(200, total_records),
-                value=1,
+            n_answerable = st.number_input(
+                "Answerable items:",
+                min_value=0,
+                max_value=total_records,
+                value=25,
+                step=1,
+            )
+            n_unanswerable = st.number_input(
+                "Unanswerable items:",
+                min_value=0,
+                max_value=total_records,
+                value=25,
                 step=1,
             )
             target_depth = st.selectbox("Pipeline Depth (n):", [1, 5, 10], index=0)
@@ -114,8 +125,22 @@ if file_upload is not None:
             run_id = run_started_at.strftime("%Y%m%dT%H%M%S")
             dataset_name = getattr(file_upload, "name", "unknown")
             random.seed(random_seed)
-            selected_sample = random.sample(all_data, min(sample_size, len(all_data)))
-            valid_sample = [row for row in selected_sample if row.get("context")]
+
+            answerable_pool = sorted(
+                [r for r in all_data if not r["is_impossible"]],
+                key=lambda r: r["source_text_id"],
+            )
+            unanswerable_pool = sorted(
+                [r for r in all_data if r["is_impossible"]],
+                key=lambda r: r["source_text_id"],
+            )
+            sampled_answerable = random.sample(
+                answerable_pool, min(n_answerable, len(answerable_pool))
+            )
+            sampled_unanswerable = random.sample(
+                unanswerable_pool, min(n_unanswerable, len(unanswerable_pool))
+            )
+            valid_sample = sampled_answerable + sampled_unanswerable
 
             st.write("---")
             st.header("Pipeline Execution")
@@ -146,6 +171,11 @@ if file_upload is not None:
                     row["all_valid_answers"],
                     row["is_impossible"],
                 )
+                baseline_recall_loss = measure_qa_recall_loss(
+                    baseline_understanding,
+                    row["all_valid_answers"],
+                    row["is_impossible"],
+                )
                 baseline_answer = baseline_understanding.get("answer", "CANNOT_ANSWER")
 
                 initial_state = {
@@ -164,6 +194,7 @@ if file_upload is not None:
                     "global_drift_scores": [],
                     "qa_recoverability_scores": [],
                     "em_recoverability_scores": [],
+                    "qa_recall_loss_scores": [],
                     "agent_answers": [],
                     "fabrication_flags": [],
                     "all_valid_answers": row["all_valid_answers"],
@@ -180,6 +211,9 @@ if file_upload is not None:
                 )
                 em_recoverability_scores = final_result.get(
                     "em_recoverability_scores", []
+                )
+                qa_recall_loss_scores = final_result.get(
+                    "qa_recall_loss_scores", []
                 )
                 fabrication_flags = final_result.get("fabrication_flags", [])
 
@@ -239,6 +273,13 @@ if file_upload is not None:
                 )
                 attributable_em_loss = max(0.0, final_em_loss - baseline_em_loss)
 
+                final_recall_loss = (
+                    float(qa_recall_loss_scores[-1])
+                    if qa_recall_loss_scores
+                    else 0.0
+                )
+                attributable_recall_loss = max(0.0, final_recall_loss - baseline_recall_loss)                
+
                 em_f1_gap = attributable_em_loss - attributable_qa_loss
 
                 if rater_a_faithful == 1 and rater_b_faithful == 1:
@@ -249,7 +290,9 @@ if file_upload is not None:
 
                 else:
                     if row["is_impossible"]:
-                        if "UNANSWERABLE" in final_result["current_text"].upper():
+                        # if "UNANSWERABLE" in final_result["current_text"].upper():
+                        # if "CANNOT_ANSWER" in agent_answer.upper():
+                        if "CANNOT_ANSWER" in baseline_answer.upper():
                             failure_mode = "Correct Refusal (System Success)"
                         else:
                             failure_mode = (
@@ -299,6 +342,10 @@ if file_upload is not None:
                         "baseline_recoverable": baseline_recoverable,
                         "final_qa_loss": final_qa_loss,
                         "attributable_qa_loss": attributable_qa_loss,
+                        "baseline_recall_loss": baseline_recall_loss,
+                        "final_recall_loss": final_recall_loss,
+                        "attributable_recall_loss": attributable_recall_loss,
+                        "qa_recall_loss_history": qa_recall_loss_scores,
                         "fabrication_history": fabrication_flags,
                         "fabricated_any_hop": int(any(fabrication_flags)),
                         "first_fabrication_hop": (
