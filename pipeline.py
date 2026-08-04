@@ -18,7 +18,7 @@ from nltk.stem import WordNetLemmatizer
 SEMANTIC_SHIFT_THRESHOLD = 0.15
 
 AGENT_MODEL = "gemma2:2b"
-READER_MODEL = "gemma2:2b"
+READER_MODEL = "llama3:8b"#"gemma2:2b"
 RATER_MODEL_A = "llama3:8b"
 RATER_MODEL_B = "mistral:7b"
 EMBEDDER_MODEL = "all-MiniLM-L6-v2"
@@ -50,8 +50,6 @@ def get_embedder():
 
 
 class AgentState(TypedDict):
-    """A dictionary representing the state of an agent."""
-
     original_context: str
     current_text: str
     question: str
@@ -74,7 +72,6 @@ class AgentState(TypedDict):
 
 
 def calculate_core_token_preservation(original: str, current: str) -> float:
-    """Calculates the preservation score of core tokens between the original and current text."""
     original_tokens = extract_content_tokens(original)
     current_tokens = extract_content_tokens(current)
     if not original_tokens:
@@ -84,7 +81,6 @@ def calculate_core_token_preservation(original: str, current: str) -> float:
 
 
 def extract_content_tokens(text: str) -> set:
-    """Extracts content tokens from the given text"""
     try:
         tokens = word_tokenize(text.lower())
         pos_tags = pos_tag(tokens)
@@ -107,13 +103,6 @@ def extract_content_tokens(text: str) -> set:
 
 
 def extract_agent_understanding(context: str, question: str, seed: int = 42) -> dict:
-    """
-    Extract what the agent understands from the context.
-    This is the core of semantic drift measurement.
-
-    Returns:
-        Dictionary with key_facts, understanding, and answer
-    """
     llm = ChatOllama(model=READER_MODEL, temperature=0.0, seed=seed)
 
     system_prompt = SystemMessage(
@@ -166,11 +155,10 @@ def normalize_answer(s: str) -> str:
     s = s.lower()
     s = "".join(ch for ch in s if ch not in set(string.punctuation))
     s = re.sub(r"\b(a|an|the)\b", " ", s)
-    return " ".join(s.split())
+    return " ".join(s.split()) 
 
 
 def squad_f1(prediction: str, ground_truth: str) -> float:
-    """SQuAD official token-level F1"""
     pred_tokens = normalize_answer(prediction).split()
     gt_tokens = normalize_answer(ground_truth).split()
     common = Counter(pred_tokens) & Counter(gt_tokens)
@@ -183,11 +171,10 @@ def squad_f1(prediction: str, ground_truth: str) -> float:
 
 
 def squad_em(prediction: str, ground_truth: str) -> float:
-    """SQuAD official exact match."""
     return float(normalize_answer(prediction) == normalize_answer(ground_truth))
 
 
-def measure_em_recoverability(
+def measure_em_recoverability_loss(
     current_understanding: dict,
     expected_answers,
     is_impossible: bool = False,
@@ -211,11 +198,8 @@ def measure_em_recoverability(
     return 1.0 - best_em
 
 
-def measure_qa_recoverability(
-    current_understanding: dict,
-    expected_answers,
-    is_impossible: bool = False,
-) -> float:
+
+def measure_f1_recoverability_loss(current_understanding: dict, expected_answers, is_impossible: bool = False,) -> float:
     current_answer = current_understanding.get("answer", "").lower().strip()
 
     if is_impossible:
@@ -241,7 +225,7 @@ def squad_recall(prediction: str, ground_truth: str) -> float:
         return 1.0 if not pred_tokens else 0.0
     common = Counter(pred_tokens) & Counter(
         gt_tokens
-    )  # Counter, not collections.Counter
+    )  
     overlap = sum(common.values())
     return overlap / len(gt_tokens) if overlap else 0.0
 
@@ -262,15 +246,17 @@ def measure_qa_recall_loss(
     if isinstance(expected_answers, str):
         expected_answers = [expected_answers]
 
-    golds = [g for g in (expected_answers or []) if isinstance(g, str) and g.strip()]
-    if not golds:
+    gold_ans = [g for g in (expected_answers or []) if isinstance(g, str) and g.strip()]
+    if not gold_ans:
         return 1.0
 
-    best_recall = max(squad_recall(current_answer, g) for g in golds)
+    best_recall = max(squad_recall(current_answer, g) for g in gold_ans)
     return 1.0 - best_recall
 
 
 def calculate_semantic_drift(previous_text: str, current_text: str) -> float:
+    if not previous_text.strip() or not current_text.strip():
+        return 1.0
     try:
         embedder = get_embedder()
         embeddings = embedder.encode([previous_text, current_text])
@@ -282,7 +268,6 @@ def calculate_semantic_drift(previous_text: str, current_text: str) -> float:
 
 
 def create_pipeline():
-    """Creating a pipeline."""
 
     def rewrite_node(state: AgentState):
         llm = ChatOllama(
@@ -324,11 +309,11 @@ def create_pipeline():
             state["original_context"], rewritten_text
         )
 
-        qa_recoverability = measure_qa_recoverability(
+        qa_recoverability = measure_f1_recoverability_loss(
             current_understanding, state["all_valid_answers"], state["is_impossible"]
         )
 
-        em_recoverability = measure_em_recoverability(
+        em_recoverability = measure_em_recoverability_loss(
             current_understanding, state["all_valid_answers"], state["is_impossible"]
         )
 
