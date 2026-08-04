@@ -32,10 +32,10 @@ from pipeline import (
     RATER_MODEL_A,
     RATER_MODEL_B,
     EMBEDDER_MODEL,
-    measure_qa_recoverability,
     rate_faithfulness_at_checkpoints,
     select_checkpoints,
-    measure_em_recoverability,
+    measure_f1_recoverability_loss,
+    measure_em_recoverability_loss,
     measure_qa_recall_loss,
 )
 
@@ -87,7 +87,7 @@ if file_upload is not None:
                         }
                     )
         all_data.sort(key=lambda r: r["source_text_id"])
-
+        #print(all_data[:5])
         total_records = len(all_data)
 
         st.success(
@@ -103,20 +103,18 @@ if file_upload is not None:
                 "Answerable items:",
                 min_value=0,
                 max_value=total_records,
-                value=25,
+                value=1,
                 step=1,
             )
             n_unanswerable = st.number_input(
                 "Unanswerable items:",
                 min_value=0,
                 max_value=total_records,
-                value=25,
+                value=1,
                 step=1,
             )
             target_depth = st.selectbox("Pipeline Depth (n):", [1, 5, 10], index=0)
-            exp_temp = st.selectbox(
-                "Generation Temperature (T):", [0.1, 0.5, 0.9], index=1
-            )
+            exp_temp = st.selectbox("Generation Temperature (T):", [0.1, 0.5, 0.9], index=1)
             random_seed = st.number_input("Random Seed:", min_value=1, value=42)
             generate_btn = st.button("Generate Experiment", type="primary")
 
@@ -134,14 +132,15 @@ if file_upload is not None:
                 [r for r in all_data if r["is_impossible"]],
                 key=lambda r: r["source_text_id"],
             )
-            sampled_answerable = random.sample(
+            sample_answerable_items = random.sample(
                 answerable_pool, min(n_answerable, len(answerable_pool))
             )
-            sampled_unanswerable = random.sample(
+            sample_unanswerable_items = random.sample(
                 unanswerable_pool, min(n_unanswerable, len(unanswerable_pool))
             )
-            valid_sample = sampled_answerable + sampled_unanswerable
-
+            valid_sample = sample_answerable_items + sample_unanswerable_items
+            #st.write(valid_sample[:5])
+            #breakpoint()
             st.write("---")
             st.header("Pipeline Execution")
             progress_bar = st.progress(0)
@@ -160,13 +159,14 @@ if file_upload is not None:
                 baseline_understanding = extract_agent_understanding(
                     row["context"], row["question"], int(random_seed)
                 )
-                baseline_qa_loss = measure_qa_recoverability(
+                # st.write(baseline_understanding)
+                baseline_qa_loss = measure_f1_recoverability_loss(
                     baseline_understanding,
                     row["all_valid_answers"],
                     row["is_impossible"],
                 )
 
-                baseline_em_loss = measure_em_recoverability(
+                baseline_em_loss = measure_em_recoverability_loss(
                     baseline_understanding,
                     row["all_valid_answers"],
                     row["is_impossible"],
@@ -177,7 +177,10 @@ if file_upload is not None:
                     row["is_impossible"],
                 )
                 baseline_answer = baseline_understanding.get("answer", "CANNOT_ANSWER")
-
+                # st.write(f"Baseline QA loss: {baseline_qa_loss:.4f}")
+                # st.write(f"Baseline EM loss: {baseline_em_loss:.4f}")
+                # st.write(f"Baseline Recall loss: {baseline_recall_loss:.4f}")
+                # breakpoint()
                 initial_state = {
                     "original_context": row["context"],
                     "ground_truth_answer": row["ground_truth_answer"],
@@ -199,7 +202,8 @@ if file_upload is not None:
                     "fabrication_flags": [],
                     "all_valid_answers": row["all_valid_answers"],
                 }
-
+                # st.write(initial_state)
+                # breakpoint()
                 progress_bar.progress((idx + 1) / len(valid_sample))
 
                 final_result = pipeline_app.invoke(initial_state)
@@ -216,6 +220,7 @@ if file_upload is not None:
                     "qa_recall_loss_scores", []
                 )
                 fabrication_flags = final_result.get("fabrication_flags", [])
+                agent_answers = final_result.get("agent_answers", [])
 
                 checkpoints = select_checkpoints(len(final_result.get("history", [])))
                 status_text.text(
@@ -282,24 +287,24 @@ if file_upload is not None:
 
                 em_f1_gap = attributable_em_loss - attributable_qa_loss
 
-                if rater_a_faithful == 1 and rater_b_faithful == 1:
+                if row["is_impossible"]:
+                    n_fab = sum(fabrication_flags)
+                    n_hops = len(fabrication_flags)
+                    if n_hops == 0:
+                        failure_mode = "No hops recorded"
+                    elif n_fab == 0:
+                        failure_mode = "Correctly refused to answer (faithful)"
+                    elif n_fab == n_hops:
+                        failure_mode = "Fabrication (hallucination)"
+                    else:
+                        failure_mode = "Drift-Induced Fabrication (some hops)"
+                elif rater_a_faithful == 1 and rater_b_faithful == 1:
                     if global_drift_final > SEMANTIC_SHIFT_THRESHOLD:
                         failure_mode = "High Semantic Shift (no hallucination)"
                     else:
                         failure_mode = "Stable / Conserved"
-
                 else:
-                    if row["is_impossible"]:
-                        # if "UNANSWERABLE" in final_result["current_text"].upper():
-                        # if "CANNOT_ANSWER" in agent_answer.upper():
-                        if "CANNOT_ANSWER" in baseline_answer.upper():
-                            failure_mode = "Correct Refusal (System Success)"
-                        else:
-                            failure_mode = (
-                                "Hallucination (fabricated answerable content)"
-                            )
-                    else:
-                        failure_mode = "Hallucination / Faithfulness Failure"
+                    failure_mode = "Hallucination / Faithfulness Failure"
 
                 results_list.append(
                     {
@@ -347,6 +352,7 @@ if file_upload is not None:
                         "attributable_recall_loss": attributable_recall_loss,
                         "qa_recall_loss_history": qa_recall_loss_scores,
                         "fabrication_history": fabrication_flags,
+                        "agent_answers_history": str(agent_answers), 
                         "fabricated_any_hop": int(any(fabrication_flags)),
                         "first_fabrication_hop": (
                             fabrication_flags.index(1) + 1
@@ -392,14 +398,18 @@ if file_upload is not None:
                         "qa_metric": "SQuAD official EM + token-F1 (max over gold answers)",
                         "diagnosed_cause": failure_mode,
                         "is_hallucination_failure": (
-                            1 if failure_mode.startswith("Hallucination") else 0
+                           # 1 if failure_mode.startswith("Hallucination") else 0 
+                           1 if (row["is_impossible"] and any(fabrication_flags)) or (not row["is_impossible"] and not (rater_a_faithful == 1 and rater_b_faithful == 1)) else 0
                         ),
                         "rater_agreement": (
                             1 if rater_a_faithful == rater_b_faithful else 0
                         ),
                     }
                 )
-
+                try:
+                    pd.DataFrame(results_list).to_csv(f"_drift_d{pipeline_depth}_T{temperature}_seed{random_seed}_PART.csv", index=False,)
+                except Exception:
+                    pass
                 progress_bar.progress(min(1.0, (idx + 1) / len(valid_sample)))
 
             status_text.empty()
@@ -431,8 +441,12 @@ if file_upload is not None:
                 else 0.0
             )
 
-            if math.isnan(cohens_kappa) or np.isnan(cohens_kappa):
-                cohens_kappa = 1.0 if avg_agreement_pct == 100.0 else 0.0
+            if cohens_kappa is None or math.isnan(cohens_kappa):
+                cohens_kappa = None
+                kappa_calculated = False
+            else:
+                kappa_calculated = True
+
 
             st.header("Pipeline Results")
             col_m1, col_m2, col_m3 = st.columns(3)
@@ -476,9 +490,12 @@ if file_upload is not None:
             with col_m8:
                 st.metric("Rater A-B Agreement", f"{df['rater_agreement'].mean():.2%}")
             with col_m9:
-                st.metric(
+                if kappa_calculated:
+                    st.metric(
                     "Cohen's κ (inter-rater, faithfulness)", f"{cohens_kappa:.4f}"
-                )
+                    )
+                else:
+                    st.metric("Cohen's κ (inter-rater, faithfulness)", "n/a")
             with col_m10:
                 hallucination_rate = (
                     df["is_hallucination_failure"].mean() if len(df) > 0 else 0.0
@@ -772,11 +789,15 @@ if file_upload is not None:
                 text_history = sample_data["text_history"]
                 semantic_history = sample_data["semantic_scores_history"]
                 qa_history = sample_data["qa_recoverability_history"]
+                #answers_history = ast.literal_eval(sample_data["agent_answers_history"])
+                answers_history = ast.literal_eval(sample_data.get("agent_answers_history", "[]"))
 
                 if isinstance(semantic_history, str):
                     semantic_history = ast.literal_eval(semantic_history)
                 if isinstance(qa_history, str):
                     qa_history = ast.literal_eval(qa_history)
+                if isinstance(answers_history, str):
+                    answers_history = ast.literal_eval(answers_history)
 
                 qa_labels = {0.0: "Preserved", 0.5: "Partial Loss", 1.0: "Lost"}
 
@@ -797,6 +818,12 @@ if file_upload is not None:
 
                     with st.expander(expander_title, expanded=is_expanded):
                         st.write(text)
+                        reader_ans = answers_history[i] if i < len(answers_history) else "N/A"
+                        if sample_data["is_impossible"]:
+                            verdict = "Correctly refused" if "CANNOT_ANSWER" in str(reader_ans).upper() else "Fabricated"
+                        else:
+                            verdict = ""
+                        st.caption(f"Reader Answer: {reader_ans} | Verdict: {verdict}")
 
                 st.subheader("Information Degradation Curves")
 
@@ -820,24 +847,24 @@ if file_upload is not None:
                 ).set_index("Hop")
                 st.line_chart(qa_chart_data, color=["#dc3545"])
 
-            st.markdown("### Experiment Configuration and Metadata")
+            # st.markdown("### Experiment Configuration and Metadata")
 
-            metadata_cols = st.columns(7)
-            with metadata_cols[0]:
-                st.metric("Pipeline Depth", int(target_depth))
-            with metadata_cols[1]:
-                st.metric("Temperature", exp_temp)
-            with metadata_cols[2]:
-                st.metric("Sample Size (N)", len(df))
-            with metadata_cols[3]:
-                st.metric("Random Seed", random_seed)
-            with metadata_cols[4]:
-                st.metric("Model", "gemma2:2b")
-            with metadata_cols[5]:
-                st.metric("Dataset", "SQuAD v2.0")
-            with metadata_cols[6]:
+            # metadata_cols = st.columns(7)
+            # with metadata_cols[0]:
+            #     st.metric("Pipeline Depth", int(target_depth))
+            # with metadata_cols[1]:
+            #     st.metric("Temperature", exp_temp)
+            # with metadata_cols[2]:
+            #     st.metric("Sample Size (N)", len(df))
+            # with metadata_cols[3]:
+            #     st.metric("Random Seed", random_seed)
+            # with metadata_cols[4]:
+            #     st.metric("Model", "gemma2:2b")
+            # with metadata_cols[5]:
+            #     st.metric("Dataset", "SQuAD v2.0")
+            # with metadata_cols[6]:
 
-                st.metric("Run Date", datetime.datetime.now().strftime("%Y-%m-%d"))
+            #     st.metric("Run Date", datetime.datetime.now().strftime("%Y-%m-%d"))
 
             st.markdown("---")
 
@@ -960,7 +987,7 @@ if file_upload is not None:
                     "qa_metric",
                 ]
                 present = [c for c in manifest_cols if c in df.columns]
-                st.table(df[present].iloc[0].rename("value").to_frame())
+                st.table(df[present].iloc[0].rename("value").to_frame().astype(str))
 
     except Exception as e:
         st.error(f"Error processing file: {e}")
