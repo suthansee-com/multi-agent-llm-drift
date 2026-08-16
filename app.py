@@ -87,7 +87,7 @@ if file_upload is not None:
                         }
                     )
         all_data.sort(key=lambda r: r["source_text_id"])
-        #print(all_data[:5])
+        # print(all_data[:5])
         total_records = len(all_data)
 
         st.success(
@@ -114,7 +114,9 @@ if file_upload is not None:
                 step=1,
             )
             target_depth = st.selectbox("Pipeline Depth (n):", [1, 5, 10], index=0)
-            exp_temp = st.selectbox("Generation Temperature (T):", [0.1, 0.5, 0.9], index=1)
+            exp_temp = st.selectbox(
+                "Generation Temperature (T):", [0.1, 0.5, 0.9], index=1
+            )
             random_seed = st.number_input("Random Seed:", min_value=1, value=42)
             generate_btn = st.button("Generate Experiment", type="primary")
 
@@ -139,8 +141,7 @@ if file_upload is not None:
                 unanswerable_pool, min(n_unanswerable, len(unanswerable_pool))
             )
             valid_sample = sample_answerable_items + sample_unanswerable_items
-            #st.write(valid_sample[:5])
-            #breakpoint()
+
             st.write("---")
             st.header("Pipeline Execution")
             progress_bar = st.progress(0)
@@ -151,266 +152,293 @@ if file_upload is not None:
             rater_b_verdicts = []
 
             for idx, row in enumerate(valid_sample):
-                status_text.text(f"Processing item {idx + 1} of {len(valid_sample)}...")
-
-                status_text.text(
-                    f"Processing {idx + 1}/{len(valid_sample)} - measuring n=0 baseline..."
-                )
-                baseline_understanding = extract_agent_understanding(
-                    row["context"], row["question"], int(random_seed)
-                )
-                # st.write(baseline_understanding)
-                baseline_qa_loss = measure_f1_recoverability_loss(
-                    baseline_understanding,
-                    row["all_valid_answers"],
-                    row["is_impossible"],
-                )
-
-                baseline_em_loss = measure_em_recoverability_loss(
-                    baseline_understanding,
-                    row["all_valid_answers"],
-                    row["is_impossible"],
-                )
-                baseline_recall_loss = measure_qa_recall_loss(
-                    baseline_understanding,
-                    row["all_valid_answers"],
-                    row["is_impossible"],
-                )
-                baseline_answer = baseline_understanding.get("answer", "CANNOT_ANSWER")
-                # st.write(f"Baseline QA loss: {baseline_qa_loss:.4f}")
-                # st.write(f"Baseline EM loss: {baseline_em_loss:.4f}")
-                # st.write(f"Baseline Recall loss: {baseline_recall_loss:.4f}")
-                # breakpoint()
-                initial_state = {
-                    "original_context": row["context"],
-                    "ground_truth_answer": row["ground_truth_answer"],
-                    "current_text": row["context"],
-                    "question": row["question"],
-                    "is_impossible": row["is_impossible"],
-                    "history": [],
-                    "current_depth": 0,
-                    "target_depth": target_depth,
-                    "temperature": exp_temp,
-                    "core_token_preservation_scores": [],
-                    "seed": int(random_seed),
-                    "semantic_drift_scores": [],
-                    "global_drift_scores": [],
-                    "qa_recoverability_scores": [],
-                    "em_recoverability_scores": [],
-                    "qa_recall_loss_scores": [],
-                    "agent_answers": [],
-                    "fabrication_flags": [],
-                    "all_valid_answers": row["all_valid_answers"],
-                }
-                # st.write(initial_state)
-                # breakpoint()
-                progress_bar.progress((idx + 1) / len(valid_sample))
-
-                final_result = pipeline_app.invoke(initial_state)
-                scores = final_result.get("core_token_preservation_scores", [])
-                semantic_scores = final_result.get("semantic_drift_scores", [])
-                global_scores = final_result.get("global_drift_scores", [])
-                qa_recoverability_scores = final_result.get(
-                    "qa_recoverability_scores", []
-                )
-                em_recoverability_scores = final_result.get(
-                    "em_recoverability_scores", []
-                )
-                qa_recall_loss_scores = final_result.get(
-                    "qa_recall_loss_scores", []
-                )
-                fabrication_flags = final_result.get("fabrication_flags", [])
-                agent_answers = final_result.get("agent_answers", [])
-
-                checkpoints = select_checkpoints(len(final_result.get("history", [])))
-                status_text.text(
-                    f"Processing {idx + 1}/{len(valid_sample)} - rating faithfulness at hops {checkpoints}..."
-                )
-                checkpoint_verdicts = rate_faithfulness_at_checkpoints(
-                    row["context"],
-                    final_result.get("history", []),
-                    row["is_impossible"],
-                    int(random_seed),
-                )
-                final_hop = max(checkpoint_verdicts) if checkpoint_verdicts else 1
-                rater_a_faithful = checkpoint_verdicts.get(final_hop, {}).get(
-                    "rater_a", 0
-                )
-                rater_b_faithful = checkpoint_verdicts.get(final_hop, {}).get(
-                    "rater_b", 0
-                )
-
-                rater_a_verdicts.append(rater_a_faithful)
-                rater_b_verdicts.append(rater_b_faithful)
-
-                avg_score = float(np.mean(scores)) if scores else 0.0
-                final_score = float(scores[-1]) if scores else 0.0
-                avg_qa_recoverability = (
-                    float(np.mean(qa_recoverability_scores))
-                    if qa_recoverability_scores
-                    else 0.0
-                )
-
-                local_drift_mean = (
-                    float(np.mean(semantic_scores)) if semantic_scores else 0.0
-                )
-                local_drift_sum = (
-                    float(np.sum(semantic_scores)) if semantic_scores else 0.0
-                )
-                global_drift_final = float(global_scores[-1]) if global_scores else 0.0
-                global_drift_max = (
-                    float(np.max(global_scores)) if global_scores else 0.0
-                )
-                drift_cancellation = local_drift_sum - global_drift_final
-
-                final_qa_loss = (
-                    float(qa_recoverability_scores[-1])
-                    if qa_recoverability_scores
-                    else 0.0
-                )
-                attributable_qa_loss = max(0.0, final_qa_loss - baseline_qa_loss)
-                baseline_recoverable = 1 if baseline_qa_loss == 0.0 else 0
-
-                final_em_loss = (
-                    float(em_recoverability_scores[-1])
-                    if em_recoverability_scores
-                    else 0.0
-                )
-                attributable_em_loss = max(0.0, final_em_loss - baseline_em_loss)
-
-                final_recall_loss = (
-                    float(qa_recall_loss_scores[-1])
-                    if qa_recall_loss_scores
-                    else 0.0
-                )
-                attributable_recall_loss = max(0.0, final_recall_loss - baseline_recall_loss)                
-
-                em_f1_gap = attributable_em_loss - attributable_qa_loss
-
-                if row["is_impossible"]:
-                    n_fab = sum(fabrication_flags)
-                    n_hops = len(fabrication_flags)
-                    if n_hops == 0:
-                        failure_mode = "No hops recorded"
-                    elif n_fab == 0:
-                        failure_mode = "Correctly refused to answer (faithful)"
-                    elif n_fab == n_hops:
-                        failure_mode = "Fabrication (hallucination)"
-                    else:
-                        failure_mode = "Drift-Induced Fabrication (some hops)"
-                elif rater_a_faithful == 1 and rater_b_faithful == 1:
-                    if global_drift_final > SEMANTIC_SHIFT_THRESHOLD:
-                        failure_mode = "High Semantic Shift (no hallucination)"
-                    else:
-                        failure_mode = "Stable / Conserved"
-                else:
-                    failure_mode = "Hallucination / Faithfulness Failure"
-
-                results_list.append(
-                    {
-                        "sample_id": row["source_text_id"],
-                        "topic": row["topic"],
-                        "question": row["question"],
-                        "ground_truth": row["ground_truth_answer"],
-                        "all_valid_answers": str(row["all_valid_answers"]),
-                        "original_text": (
-                            row["context"][:150] + "..."
-                            if len(row["context"]) > 150
-                            else row["context"]
-                        ),
-                        "final_text": (
-                            final_result["current_text"][:150] + "..."
-                            if len(final_result["current_text"]) > 150
-                            else final_result["current_text"]
-                        ),
-                        "original_text_full": row["context"],
-                        "final_text_full": final_result["current_text"],
-                        "text_history": final_result["history"],
-                        "scores_history": scores,
-                        "semantic_scores_history": semantic_scores,
-                        "global_drift_history": global_scores,
-                        "global_drift_final": global_drift_final,
-                        "global_drift_max": global_drift_max,
-                        "local_drift_mean": local_drift_mean,
-                        "local_drift_sum": local_drift_sum,
-                        "drift_cancellation": drift_cancellation,
-                        "qa_recoverability_history": qa_recoverability_scores,
-                        "pipeline_depth": target_depth,
-                        "temperature": exp_temp,
-                        "iterations_completed": final_result["current_depth"],
-                        "avg_core_token_preservation": avg_score,
-                        "final_core_token_preservation": final_score,
-                        "avg_lexical_loss": 1.0 - avg_score,
-                        "final_lexical_loss": 1.0 - final_score,
-                        "baseline_qa_loss": baseline_qa_loss,
-                        "baseline_answer": baseline_answer,
-                        "baseline_recoverable": baseline_recoverable,
-                        "final_qa_loss": final_qa_loss,
-                        "attributable_qa_loss": attributable_qa_loss,
-                        "baseline_recall_loss": baseline_recall_loss,
-                        "final_recall_loss": final_recall_loss,
-                        "attributable_recall_loss": attributable_recall_loss,
-                        "qa_recall_loss_history": qa_recall_loss_scores,
-                        "fabrication_history": fabrication_flags,
-                        "agent_answers_history": str(agent_answers), 
-                        "fabricated_any_hop": int(any(fabrication_flags)),
-                        "first_fabrication_hop": (
-                            fabrication_flags.index(1) + 1
-                            if 1 in fabrication_flags
-                            else 0
-                        ),
-                        "fabrication_rate": (
-                            float(np.mean(fabrication_flags))
-                            if fabrication_flags
-                            else 0.0
-                        ),
-                        "checkpoint_hops": list(checkpoint_verdicts.keys()),
-                        "checkpoint_both_faithful": [
-                            v["both_faithful"] for v in checkpoint_verdicts.values()
-                        ],
-                        "baseline_em_loss": baseline_em_loss,
-                        "final_em_loss": final_em_loss,
-                        "attributable_em_loss": attributable_em_loss,
-                        "em_recoverability_history": em_recoverability_scores,
-                        "em_f1_gap": em_f1_gap,
-                        "avg_qa_recoverability": avg_qa_recoverability,
-                        "global_drift_similarity": 1.0 - global_drift_final,
-                        "rater_a_faithful": rater_a_faithful,
-                        "rater_b_faithful": rater_b_faithful,
-                        "run_id": run_id,
-                        "run_timestamp": run_started_at.isoformat(timespec="seconds"),
-                        "dataset_file": dataset_name,
-                        "dataset": "SQuAD v2.0",
-                        "sample_size_n": len(valid_sample),
-                        "random_seed": int(random_seed),
-                        "agent_model": AGENT_MODEL,
-                        "reader_model": READER_MODEL,
-                        "rater_a_model": RATER_MODEL_A,
-                        "rater_b_model": RATER_MODEL_B,
-                        "rater_a_seed": int(random_seed),
-                        "rater_b_seed": int(random_seed),
-                        "embedder_model": EMBEDDER_MODEL,
-                        "agent_temperature": exp_temp,
-                        "rater_temperature": 0.0,
-                        "reader_temperature": 0.0,
-                        "semantic_shift_threshold": SEMANTIC_SHIFT_THRESHOLD,
-                        "is_impossible": row["is_impossible"],
-                        "qa_metric": "SQuAD official EM + token-F1 (max over gold answers)",
-                        "diagnosed_cause": failure_mode,
-                        "is_hallucination_failure": (
-                           # 1 if failure_mode.startswith("Hallucination") else 0 
-                           1 if (row["is_impossible"] and any(fabrication_flags)) or (not row["is_impossible"] and not (rater_a_faithful == 1 and rater_b_faithful == 1)) else 0
-                        ),
-                        "rater_agreement": (
-                            1 if rater_a_faithful == rater_b_faithful else 0
-                        ),
-                    }
-                )
                 try:
-                    pd.DataFrame(results_list).to_csv(f"_drift_d{pipeline_depth}_T{temperature}_seed{random_seed}_PART.csv", index=False,)
-                except Exception:
-                    pass
-                progress_bar.progress(min(1.0, (idx + 1) / len(valid_sample)))
+                    status_text.text(
+                        f"Processing item {idx + 1} of {len(valid_sample)}..."
+                    )
+
+                    status_text.text(
+                        f"Processing {idx + 1}/{len(valid_sample)} - measuring n=0 baseline..."
+                    )
+                    baseline_understanding = extract_agent_understanding(
+                        row["context"], row["question"], int(random_seed)
+                    )
+                    # st.write(baseline_understanding)
+                    baseline_qa_loss = measure_f1_recoverability_loss(
+                        baseline_understanding,
+                        row["all_valid_answers"],
+                        row["is_impossible"],
+                    )
+
+                    baseline_em_loss = measure_em_recoverability_loss(
+                        baseline_understanding,
+                        row["all_valid_answers"],
+                        row["is_impossible"],
+                    )
+                    baseline_recall_loss = measure_qa_recall_loss(
+                        baseline_understanding,
+                        row["all_valid_answers"],
+                        row["is_impossible"],
+                    )
+                    baseline_answer = baseline_understanding.get(
+                        "answer", "CANNOT_ANSWER"
+                    )
+                    # st.write(f"Baseline QA loss: {baseline_qa_loss:.4f}")
+                    # st.write(f"Baseline EM loss: {baseline_em_loss:.4f}")
+                    # st.write(f"Baseline Recall loss: {baseline_recall_loss:.4f}")
+                    # breakpoint()
+                    initial_state = {
+                        "original_context": row["context"],
+                        "ground_truth_answer": row["ground_truth_answer"],
+                        "current_text": row["context"],
+                        "question": row["question"],
+                        "is_impossible": row["is_impossible"],
+                        "history": [],
+                        "current_depth": 0,
+                        "target_depth": target_depth,
+                        "temperature": exp_temp,
+                        "core_token_preservation_scores": [],
+                        "seed": int(random_seed),
+                        "semantic_drift_scores": [],
+                        "global_drift_scores": [],
+                        "qa_recoverability_scores": [],
+                        "em_recoverability_scores": [],
+                        "qa_recall_loss_scores": [],
+                        "agent_answers": [],
+                        "fabrication_flags": [],
+                        "all_valid_answers": row["all_valid_answers"],
+                    }
+                    # st.write(initial_state)
+                    # breakpoint()
+                    progress_bar.progress((idx + 1) / len(valid_sample))
+
+                    final_result = pipeline_app.invoke(initial_state)
+                    scores = final_result.get("core_token_preservation_scores", [])
+                    semantic_scores = final_result.get("semantic_drift_scores", [])
+                    global_scores = final_result.get("global_drift_scores", [])
+                    qa_recoverability_scores = final_result.get(
+                        "qa_recoverability_scores", []
+                    )
+                    em_recoverability_scores = final_result.get(
+                        "em_recoverability_scores", []
+                    )
+                    qa_recall_loss_scores = final_result.get(
+                        "qa_recall_loss_scores", []
+                    )
+                    fabrication_flags = final_result.get("fabrication_flags", [])
+                    agent_answers = final_result.get("agent_answers", [])
+
+                    checkpoints = select_checkpoints(
+                        len(final_result.get("history", []))
+                    )
+                    status_text.text(
+                        f"Processing {idx + 1}/{len(valid_sample)} - rating faithfulness at hops {checkpoints}..."
+                    )
+                    checkpoint_verdicts = rate_faithfulness_at_checkpoints(
+                        row["context"],
+                        final_result.get("history", []),
+                        row["is_impossible"],
+                        int(random_seed),
+                    )
+                    final_hop = max(checkpoint_verdicts) if checkpoint_verdicts else 1
+                    rater_a_faithful = checkpoint_verdicts.get(final_hop, {}).get(
+                        "rater_a", 0
+                    )
+                    rater_b_faithful = checkpoint_verdicts.get(final_hop, {}).get(
+                        "rater_b", 0
+                    )
+
+                    rater_a_verdicts.append(rater_a_faithful)
+                    rater_b_verdicts.append(rater_b_faithful)
+
+                    avg_score = float(np.mean(scores)) if scores else 0.0
+                    final_score = float(scores[-1]) if scores else 0.0
+                    avg_qa_recoverability = (
+                        float(np.mean(qa_recoverability_scores))
+                        if qa_recoverability_scores
+                        else 0.0
+                    )
+
+                    local_drift_mean = (
+                        float(np.mean(semantic_scores)) if semantic_scores else 0.0
+                    )
+                    local_drift_sum = (
+                        float(np.sum(semantic_scores)) if semantic_scores else 0.0
+                    )
+                    global_drift_final = (
+                        float(global_scores[-1]) if global_scores else 0.0
+                    )
+                    global_drift_max = (
+                        float(np.max(global_scores)) if global_scores else 0.0
+                    )
+                    drift_cancellation = local_drift_sum - global_drift_final
+
+                    final_qa_loss = (
+                        float(qa_recoverability_scores[-1])
+                        if qa_recoverability_scores
+                        else 0.0
+                    )
+                    attributable_qa_loss = max(0.0, final_qa_loss - baseline_qa_loss)
+                    baseline_recoverable = 1 if baseline_qa_loss == 0.0 else 0
+
+                    final_em_loss = (
+                        float(em_recoverability_scores[-1])
+                        if em_recoverability_scores
+                        else 0.0
+                    )
+                    attributable_em_loss = max(0.0, final_em_loss - baseline_em_loss)
+
+                    final_recall_loss = (
+                        float(qa_recall_loss_scores[-1])
+                        if qa_recall_loss_scores
+                        else 0.0
+                    )
+                    attributable_recall_loss = max(
+                        0.0, final_recall_loss - baseline_recall_loss
+                    )
+
+                    em_f1_gap = attributable_em_loss - attributable_qa_loss
+
+                    if row["is_impossible"]:
+                        n_fab = sum(fabrication_flags)
+                        n_hops = len(fabrication_flags)
+                        if n_hops == 0:
+                            failure_mode = "No hops recorded"
+                        elif n_fab == 0:
+                            failure_mode = "Correctly refused to answer (faithful)"
+                        elif n_fab == n_hops:
+                            failure_mode = "Fabrication (hallucination)"
+                        else:
+                            failure_mode = "Drift-Induced Fabrication (some hops)"
+                    elif rater_a_faithful == 1 and rater_b_faithful == 1:
+                        if global_drift_final > SEMANTIC_SHIFT_THRESHOLD:
+                            failure_mode = "High Semantic Shift (no hallucination)"
+                        else:
+                            failure_mode = "Stable / Conserved"
+                    else:
+                        failure_mode = "Hallucination / Faithfulness Failure"
+
+                    results_list.append(
+                        {
+                            "sample_id": row["source_text_id"],
+                            "topic": row["topic"],
+                            "question": row["question"],
+                            "ground_truth": row["ground_truth_answer"],
+                            "all_valid_answers": str(row["all_valid_answers"]),
+                            "original_text": (
+                                row["context"][:150] + "..."
+                                if len(row["context"]) > 150
+                                else row["context"]
+                            ),
+                            "final_text": (
+                                final_result["current_text"][:150] + "..."
+                                if len(final_result["current_text"]) > 150
+                                else final_result["current_text"]
+                            ),
+                            "original_text_full": row["context"],
+                            "final_text_full": final_result["current_text"],
+                            "text_history": final_result["history"],
+                            "scores_history": scores,
+                            "semantic_scores_history": semantic_scores,
+                            "global_drift_history": global_scores,
+                            "global_drift_final": global_drift_final,
+                            "global_drift_max": global_drift_max,
+                            "local_drift_mean": local_drift_mean,
+                            "local_drift_sum": local_drift_sum,
+                            "drift_cancellation": drift_cancellation,
+                            "qa_recoverability_history": qa_recoverability_scores,
+                            "pipeline_depth": target_depth,
+                            "temperature": exp_temp,
+                            "iterations_completed": final_result["current_depth"],
+                            "avg_core_token_preservation": avg_score,
+                            "final_core_token_preservation": final_score,
+                            "avg_lexical_loss": 1.0 - avg_score,
+                            "final_lexical_loss": 1.0 - final_score,
+                            "baseline_qa_loss": baseline_qa_loss,
+                            "baseline_answer": baseline_answer,
+                            "baseline_recoverable": baseline_recoverable,
+                            "final_qa_loss": final_qa_loss,
+                            "attributable_qa_loss": attributable_qa_loss,
+                            "baseline_recall_loss": baseline_recall_loss,
+                            "final_recall_loss": final_recall_loss,
+                            "attributable_recall_loss": attributable_recall_loss,
+                            "qa_recall_loss_history": qa_recall_loss_scores,
+                            "fabrication_history": fabrication_flags,
+                            "agent_answers_history": str(agent_answers),
+                            "fabricated_any_hop": int(any(fabrication_flags)),
+                            "first_fabrication_hop": (
+                                fabrication_flags.index(1) + 1
+                                if 1 in fabrication_flags
+                                else 0
+                            ),
+                            "fabrication_rate": (
+                                float(np.mean(fabrication_flags))
+                                if fabrication_flags
+                                else 0.0
+                            ),
+                            "checkpoint_hops": list(checkpoint_verdicts.keys()),
+                            "checkpoint_both_faithful": [
+                                v["both_faithful"] for v in checkpoint_verdicts.values()
+                            ],
+                            "baseline_em_loss": baseline_em_loss,
+                            "final_em_loss": final_em_loss,
+                            "attributable_em_loss": attributable_em_loss,
+                            "em_recoverability_history": em_recoverability_scores,
+                            "em_f1_gap": em_f1_gap,
+                            "avg_qa_recoverability": avg_qa_recoverability,
+                            "global_drift_similarity": 1.0 - global_drift_final,
+                            "rater_a_faithful": rater_a_faithful,
+                            "rater_b_faithful": rater_b_faithful,
+                            "run_id": run_id,
+                            "run_timestamp": run_started_at.isoformat(
+                                timespec="seconds"
+                            ),
+                            "dataset_file": dataset_name,
+                            "dataset": "SQuAD v2.0",
+                            "sample_size_n": len(valid_sample),
+                            "random_seed": int(random_seed),
+                            "agent_model": AGENT_MODEL,
+                            "reader_model": READER_MODEL,
+                            "rater_a_model": RATER_MODEL_A,
+                            "rater_b_model": RATER_MODEL_B,
+                            "rater_a_seed": int(random_seed),
+                            "rater_b_seed": int(random_seed),
+                            "embedder_model": EMBEDDER_MODEL,
+                            "agent_temperature": exp_temp,
+                            "rater_temperature": 0.0,
+                            "reader_temperature": 0.0,
+                            "semantic_shift_threshold": SEMANTIC_SHIFT_THRESHOLD,
+                            "is_impossible": row["is_impossible"],
+                            "qa_metric": "SQuAD official EM + token-F1 (max over gold answers)",
+                            "diagnosed_cause": failure_mode,
+                            "is_hallucination_failure": (
+                                # 1 if failure_mode.startswith("Hallucination") else 0
+                                1
+                                if (row["is_impossible"] and any(fabrication_flags))
+                                or (
+                                    not row["is_impossible"]
+                                    and not (
+                                        rater_a_faithful == 1 and rater_b_faithful == 1
+                                    )
+                                )
+                                else 0
+                            ),
+                            "rater_agreement": (
+                                1 if rater_a_faithful == rater_b_faithful else 0
+                            ),
+                        }
+                    )
+                    try:
+                        pd.DataFrame(results_list).to_csv(
+                            f"_drift_d{pipeline_depth}_T{temperature}_seed{random_seed}_PART.csv",
+                            index=False,
+                        )
+                    except Exception:
+                        pass
+                    progress_bar.progress(min(1.0, (idx + 1) / len(valid_sample)))
+                except Exception as e:
+                    st.error(f"Error processing item {idx + 1}: {e}")
+                    continue
 
             status_text.empty()
             progress_bar.empty()
@@ -446,7 +474,6 @@ if file_upload is not None:
                 kappa_calculated = False
             else:
                 kappa_calculated = True
-
 
             st.header("Pipeline Results")
             col_m1, col_m2, col_m3 = st.columns(3)
@@ -492,7 +519,7 @@ if file_upload is not None:
             with col_m9:
                 if kappa_calculated:
                     st.metric(
-                    "Cohen's κ (inter-rater, faithfulness)", f"{cohens_kappa:.4f}"
+                        "Cohen's κ (inter-rater, faithfulness)", f"{cohens_kappa:.4f}"
                     )
                 else:
                     st.metric("Cohen's κ (inter-rater, faithfulness)", "n/a")
@@ -625,26 +652,14 @@ if file_upload is not None:
                     st.metric(
                         "EM-F1 Gap",
                         f"{df['em_f1_gap'].mean():.1%}",
-                        help=(
-                            "EM loss minus F1 loss, both baseline-corrected. A LARGE gap means "
-                            "answers were reworded but their content survived (lexical drift, "
-                            "meaning preserved). A gap near ZERO means EM and F1 fell together, "
-                            "i.e. the answer content itself was lost (semantic failure)."
-                        ),
                     )
 
                 gap = df["em_f1_gap"].mean()
                 if gap > 0.15:
-                    st.info(
-                        f"EM degraded {gap:.0%} more than F1. Answers are being **reworded while "
-                        "retaining their content** — consistent with drift as linguistic rephrasing "
-                        "(Mohamed et al., 2025) rather than belief-state failure."
-                    )
+                    st.info(f"EM degraded {gap:.0%} more than F1.")
                 elif len(df) > 0:
                     st.info(
-                        "EM and F1 degraded together, indicating the answer content itself was lost "
-                        "rather than merely reworded — consistent with belief-state failure "
-                        "(Lin et al., 2025) rather than benign rephrasing."
+                        "EM and F1 degraded together, indicating the answer content was lost "
                     )
             except Exception as e:
                 st.warning(f"Could not render EM vs F1 comparison: {e}")
@@ -657,11 +672,6 @@ if file_upload is not None:
                 st.metric(
                     "Reader Floor (n=0)",
                     f"{df['baseline_qa_loss'].mean():.1%}",
-                    help=(
-                        "Answer loss measured on the UNTOUCHED original context. This is the "
-                        "reader model's own error rate, not drift. Any loss below this level "
-                        "cannot be attributed to the pipeline."
-                    ),
                 )
             with b2:
                 st.metric("Total Loss (final hop)", f"{df['final_qa_loss'].mean():.1%}")
@@ -669,14 +679,10 @@ if file_upload is not None:
                 st.metric(
                     "Attributable to Pipeline",
                     f"{df['attributable_qa_loss'].mean():.1%}",
-                    help="Total loss minus the reader floor. This is the defensible drift figure.",
                 )
             if df["baseline_recoverable"].mean() < 0.6:
                 st.warning(
-                    f"The reader answered only {df['baseline_recoverable'].mean():.0%} of questions "
-                    "correctly from the ORIGINAL context. Recoverability measurements "
-                    "may be influenced by the limitations of the reader model. "
-                    "Consider a stronger reader model before drawing conclusions."
+                    f"The reader answered only {df['baseline_recoverable'].mean():.0%} of questions correctly from the ORIGINAL context."
                 )
 
             st.markdown("#### Drift Accumulation Curve (Local vs Global)")
@@ -729,12 +735,6 @@ if file_upload is not None:
                         st.metric(
                             "Drift Cancellation",
                             f"{df['drift_cancellation'].mean():.2%}",
-                            help=(
-                                "Cumulative local drift minus global drift. A large positive value "
-                                "means the chain wanders but returns toward the same semantic region "
-                                "(supporting the low-dimensional manifold claim of Arbuzov et al., 2025). "
-                                "A value near zero means drift is monotonic and irreversible."
-                            ),
                         )
             except Exception as e:
                 st.warning(f"Could not render drift curve: {e}")
@@ -789,8 +789,10 @@ if file_upload is not None:
                 text_history = sample_data["text_history"]
                 semantic_history = sample_data["semantic_scores_history"]
                 qa_history = sample_data["qa_recoverability_history"]
-                #answers_history = ast.literal_eval(sample_data["agent_answers_history"])
-                answers_history = ast.literal_eval(sample_data.get("agent_answers_history", "[]"))
+                # answers_history = ast.literal_eval(sample_data["agent_answers_history"])
+                answers_history = ast.literal_eval(
+                    sample_data.get("agent_answers_history", "[]")
+                )
 
                 if isinstance(semantic_history, str):
                     semantic_history = ast.literal_eval(semantic_history)
@@ -818,9 +820,15 @@ if file_upload is not None:
 
                     with st.expander(expander_title, expanded=is_expanded):
                         st.write(text)
-                        reader_ans = answers_history[i] if i < len(answers_history) else "N/A"
+                        reader_ans = (
+                            answers_history[i] if i < len(answers_history) else "N/A"
+                        )
                         if sample_data["is_impossible"]:
-                            verdict = "Correctly refused" if "CANNOT_ANSWER" in str(reader_ans).upper() else "Fabricated"
+                            verdict = (
+                                "Correctly refused"
+                                if "CANNOT_ANSWER" in str(reader_ans).upper()
+                                else "Fabricated"
+                            )
                         else:
                             verdict = ""
                         st.caption(f"Reader Answer: {reader_ans} | Verdict: {verdict}")
@@ -846,25 +854,6 @@ if file_upload is not None:
                     }
                 ).set_index("Hop")
                 st.line_chart(qa_chart_data, color=["#dc3545"])
-
-            # st.markdown("### Experiment Configuration and Metadata")
-
-            # metadata_cols = st.columns(7)
-            # with metadata_cols[0]:
-            #     st.metric("Pipeline Depth", int(target_depth))
-            # with metadata_cols[1]:
-            #     st.metric("Temperature", exp_temp)
-            # with metadata_cols[2]:
-            #     st.metric("Sample Size (N)", len(df))
-            # with metadata_cols[3]:
-            #     st.metric("Random Seed", random_seed)
-            # with metadata_cols[4]:
-            #     st.metric("Model", "gemma2:2b")
-            # with metadata_cols[5]:
-            #     st.metric("Dataset", "SQuAD v2.0")
-            # with metadata_cols[6]:
-
-            #     st.metric("Run Date", datetime.datetime.now().strftime("%Y-%m-%d"))
 
             st.markdown("---")
 
