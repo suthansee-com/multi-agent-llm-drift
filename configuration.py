@@ -1,0 +1,5 @@
+AGENT_MODEL = "gemma2:2b"
+READER_MODEL = "llama3:8b"
+RATER_MODEL_A = "llama3:8b"
+RATER_MODEL_B = "mistral:7b"
+EMBEDDER_MODEL = "all-MiniLM-L6-v2"

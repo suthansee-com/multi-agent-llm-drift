@@ -6,29 +6,17 @@ import numpy as np
 import math
 import ast
 from sklearn.metrics import cohen_kappa_score
-# from typing import TypedDict, List, Annotated
-# from langchain_ollama import ChatOllama
-# from langchain_core.messages import HumanMessage, SystemMessage
-# from langgraph.graph import StateGraph, END
 import datetime
-# import plotly.graph_objects as go
-
-from pipeline import (
-    # AgentState,
-    # calculate_core_token_preservation,
-    # extract_content_tokens,
-    create_pipeline,
-    # init_nltk,
-    # lemmatizer,
-    # rate_faithfulness_A,
-    # rate_faithfulness_B,
-    # calculate_semantic_drift,
-    extract_agent_understanding,
+from configuration import(
     AGENT_MODEL,
     READER_MODEL,
     RATER_MODEL_A,
     RATER_MODEL_B,
-    EMBEDDER_MODEL,
+    EMBEDDER_MODEL
+    )
+from pipeline import (
+    create_pipeline,
+    extract_agent_understanding,
     rate_faithfulness_at_checkpoints,
     select_checkpoints,
     measure_f1_recoverability_loss,
@@ -101,14 +89,14 @@ if file_upload is not None:
                 "Answerable items:",
                 min_value=0,
                 max_value=total_records,
-                value=1,
+                value=15,
                 step=1,
             )
             n_unanswerable = st.number_input(
                 "Unanswerable items:",
                 min_value=0,
                 max_value=total_records,
-                value=1,
+                value=15,
                 step=1,
             )
             target_depth = st.selectbox("Pipeline Depth (n):", [1, 5, 10], index=0)
@@ -133,7 +121,7 @@ if file_upload is not None:
                     return record["source_text_id"]
 
                 answerable_pool.sort(key=get_sort_key)
-
+                
             unanswerable_pool = []
             for r in all_data:
                 if r["is_impossible"] == True:
@@ -235,10 +223,8 @@ if file_upload is not None:
                     progress_bar.progress((idx + 1) / len(valid_sample))
 
                     final_result = pipeline_app.invoke(initial_state)
-                    st.write(final_result)
+                    #st.write(final_result)
                     scores = final_result.get("core_token_preservation_scores", [])
-                    # st.write(final_result)
-                    # breakpoint()
                     semantic_scores = final_result.get("semantic_drift_scores", [])
                     global_scores = final_result.get("global_drift_scores", [])
                     qa_recoverability_scores = final_result.get(
@@ -269,6 +255,7 @@ if file_upload is not None:
                         final_hop = max(checkpoint_verdicts)
                     else:
                         final_hop = 1
+
                     rater_a_faithful = checkpoint_verdicts.get(final_hop, {}).get(
                         "rater_a", 0
                     )
@@ -314,8 +301,6 @@ if file_upload is not None:
                     else:
                         global_drift_max = 0.0
 
-                    drift_cancellation = local_drift_sum - global_drift_final
-
                     if qa_recoverability_scores:
                         final_qa_loss = float(qa_recoverability_scores[-1])
                     else:
@@ -345,8 +330,6 @@ if file_upload is not None:
 
                     em_f1_gap = attributable_em_loss - attributable_qa_loss
 
-                    
-
                     if (row["is_impossible"] and any(fabrication_flags)) or (
                         not row["is_impossible"]
                         and not (rater_a_faithful == 1 and rater_b_faithful == 1)
@@ -359,7 +342,6 @@ if file_upload is not None:
                         _fab_rication_rate = float(np.mean(fabrication_flags))
                     else:
                         _fab_rication_rate = 0.0
-            
 
                     checkpoint_both_faithfull = []
                     for v in checkpoint_verdicts.values():
@@ -399,15 +381,12 @@ if file_upload is not None:
                             "global_drift_max": global_drift_max,
                             "local_drift_mean": local_drift_mean,
                             "local_drift_sum": local_drift_sum,
-                            "drift_cancellation": drift_cancellation,
                             "qa_recoverability_history": qa_recoverability_scores,
                             "pipeline_depth": target_depth,
                             "temperature": exp_temp,
                             "iterations_completed": final_result["current_depth"],
                             "avg_core_token_preservation": avg_score,
                             "final_core_token_preservation": final_score,
-                            "avg_lexical_loss": 1.0 - avg_score,
-                            "final_lexical_loss": 1.0 - final_score,
                             "baseline_qa_loss": baseline_qa_loss,
                             "baseline_answer": baseline_answer,
                             "baseline_recoverable": baseline_recoverable,
@@ -452,11 +431,11 @@ if file_upload is not None:
                             "rater_temperature": 0.0,
                             "reader_temperature": 0.0,
                             "is_impossible": row["is_impossible"],
-                            "qa_metric": "SQuAD official EM + token-F1",
                             "is_hallucination_failure": _is_hallucination_failure_res,
                             "rater_agreement": rater_agreements,
                         }
                     )
+                    
                     try:
                         pd.DataFrame(results_list).to_csv(
                             f"_drift_d{target_depth}_T{exp_temp}_seed{random_seed}_PART.csv",
@@ -520,7 +499,7 @@ if file_upload is not None:
                     "Pipeline Depth",
                     dpth,
                 )
-            
+
             if len(df) > 0:
                 tmps = float(df["temperature"].iloc[0])
             else:
@@ -531,32 +510,72 @@ if file_upload is not None:
                     tmps,
                 )
             st.write("---")
+            st.markdown("### Statistical Summary")
 
-            col_m4, col_m5, col_m6, col_m7 = st.columns(4)
+            b1, b2 = st.columns(2)
+            with b1:
+                st.metric(
+                    "Reader Floor (n=0)",
+                    f"{df['baseline_qa_loss'].mean():.1%}",
+                )
+
+            with b2:
+                st.metric(
+                    "Attributable loss to Pipeline",
+                    f"{df['attributable_qa_loss'].mean():.1%}",
+                )
+            st.write("---")
+            col_m4, col_m5, col_m6 = st.columns(3)
 
             with col_m4:
                 st.metric(
                     "Avg Core-Token Preservation",
                     f"{df['avg_core_token_preservation'].mean():.2%}",
                 )
-            with col_m5:
+
+            st.write("---")
+            st.markdown("#### Core token preservation")
+            try:
+                tot_hop = int(df["iterations_completed"].max())
+                ct_row = []
+                for hop in range(tot_hop):
+                    ct_va = []
+                    for r in df["scores_history"]:
+                        if isinstance(r, list) and len(r) > hop:
+                            ct_va.append(r[hop])
+
+                    if ct_va:
+                        ct_row.append(
+                            {
+                                "Hop": hop + 1,
+                                "Core Token Preservation": float(np.mean(ct_va))
+                                * 100,  
+                            }
+                        )
+
+                if ct_row:
+                    st.line_chart(
+                        pd.DataFrame(ct_row).set_index("Hop"), color=["#dc3545"]
+                    )
+
+            except Exception as e:
+                st.write(f"Error: {e}")
+
+            st.write("---")
+            st.markdown("#### Semantic Drift")
+            cos1, cos2 = st.columns(2)
+            with cos1:
                 st.metric(
                     "Avg Global Semantic Drift",
                     f"{df['global_drift_final'].mean():.2%}",
                 )
-            with col_m6:
+            with cos2:
                 st.metric(
-                    "Avg Local Semantic Drift",
-                    f"{df['local_drift_mean'].mean():.2%}"
-                )
-            with col_m7:
-                st.metric(
-                     "Drift Cancellation",
-                        f"{df['drift_cancellation'].mean():.2%}",
+                    "Avg Local Semantic Drift", f"{df['local_drift_mean'].mean():.2%}"
                 )
 
-            st.write("---")
-            st.markdown("#### Drift Accumulation Curve (Local vs Global)")
+
+            st.write("Drift Accumulation Curve (Local vs Global)")
             try:
                 max_hops = int(df["iterations_completed"].max())
                 if max_hops <= 0:
@@ -568,12 +587,12 @@ if file_upload is not None:
                     for r in df["global_drift_history"]:
                         if isinstance(r, list) and len(r) > hop:
                             g_vals.append(r[hop])
-                  
+
                     l_vals = []
                     for r in df["semantic_scores_history"]:
                         if isinstance(r, list) and len(r) > hop:
                             l_vals.append(r[hop])
-                   
+
                     if g_vals:
                         glo_d_mean = float(np.mean(g_vals))
                     else:
@@ -581,31 +600,60 @@ if file_upload is not None:
 
                     if l_vals:
                         loc_d_mean = float(np.mean(l_vals))
-                    else: 
+                    else:
                         loc_d_mean = None
 
                     curve_rows.append(
                         {
                             "Hop": hop + 1,
-                            "Global drift (vs original)": glo_d_mean,
-                            "Local drift (vs previous hop)": loc_d_mean,
+                            "Global drift (vs original)": glo_d_mean * 100,
+                            "Local drift (vs previous hop)": loc_d_mean * 100,
                         }
                     )
 
                 st.line_chart(pd.DataFrame(curve_rows).set_index("Hop"))
 
-
-                c1 = st.columns(1)[0]
-                with c1:
-                    st.metric(
-                        "Avg QA Recoverability Loss",
-                        f"{df['avg_qa_recoverability'].mean():.2%}",
-                    )
             except Exception as e:
                 st.warning(f"Error: {e}")
             st.write("---")
 
-            st.markdown("#### Answer Recovery: Exact Match vs Token-F1")
+            st.markdown("#### Answer Recovery")
+            g1, g2, g3, g4, g5, g6 = st.columns(6)
+            
+            with g1:
+                st.metric(
+                    "Avg QA Recoverability Loss",
+                    f"{df['avg_qa_recoverability'].mean():.2%}",
+                )
+            with g2:
+                st.metric(
+                    "Attributable EM Loss",
+                    f"{df['attributable_em_loss'].mean():.1%}",
+                )
+            with g3:
+                st.metric(
+                    "Attributable F1 Loss", f"{df['attributable_qa_loss'].mean():.1%}"
+                )
+            with g4:
+                st.metric(
+                    "EM-F1 Gap",
+                    f"{df['em_f1_gap'].mean():.1%}",
+                )
+            ans_df = df[df["is_impossible"] == False]
+            with g5:
+                st.metric("Total Loss", f"{ans_df['final_qa_loss'].mean():.1%}")
+
+            with g6:
+                st.metric("Avg Recall Loss", f"{df['final_recall_loss'].mean():.1%}")
+            gap = df["em_f1_gap"].mean()
+            if gap > 0.15:
+                st.info(f"EM degraded {gap:.0%} more than F1.")
+            elif len(df) > 0:
+                st.info(
+                    "EM and F1 degraded together, indicating the answer content was lost "
+                )
+
+            st.write("Exact Match vs Token-F1 vs Recall Loss")
             try:
                 max_h = int(df["iterations_completed"].max())
                 rows = []
@@ -613,82 +661,48 @@ if file_upload is not None:
                 for hop in range(max_h):
                     f1v = []
                     for r in df["qa_recoverability_history"]:
+                        if isinstance(r, str):
+                            r = ast.literal_eval(r)
                         if isinstance(r, list) and len(r) > hop:
                             f1v.append(r[hop])
-                    
+
                     emv = []
                     for r in df["em_recoverability_history"]:
+                        if isinstance(r, str):
+                            r = ast.literal_eval(r)
                         if isinstance(r, list) and len(r) > hop:
-                            emv.append(r[hop])              
-                                            
-                    if f1v or emv:
-                        if f1v:
-                            _f1_loss_pct = float(np.mean(f1v)) * 100
-                        else:
-                            _f1_loss_pct = None
-                        if emv:
-                            _em_loss_pct = float(np.mean(emv)) * 100 
-                        else:
-                            _em_loss_pct = None
+                            emv.append(r[hop])
+
+                    recv = []
+                    for r in df["qa_recall_loss_history"]:
+                        if isinstance(r, str):
+                            r = ast.literal_eval(r)
+                        if isinstance(r, list) and len(r) > hop:
+                            recv.append(r[hop])
+
+                    if f1v or emv or recv:
+                        _f1_loss_pct = (float(np.mean(f1v)) * 100) if f1v else None
+                        _em_loss_pct = (float(np.mean(emv)) * 100) if emv else None
+                        _recall_loss_pct = (float(np.mean(recv)) * 100) if recv else None
 
                         rows.append(
                             {
                                 "Hop": hop + 1,
                                 "EM loss (strict) %": _em_loss_pct,
                                 "F1 loss (lenient) %": _f1_loss_pct,
+                                "Recall loss %": _recall_loss_pct,  
                             }
                         )
 
                 if rows:
                     st.line_chart(pd.DataFrame(rows).set_index("Hop"))
 
-                g1, g2, g3, g4, g5 = st.columns(5)
-                with g1:
-                    st.metric(
-                        "Attributable EM Loss",
-                        f"{df['attributable_em_loss'].mean():.1%}",
-                    )
-                with g2:
-                    st.metric("Attributable F1 Loss", f"{df['attributable_qa_loss'].mean():.1%}")
-                with g3:
-                    st.metric(
-                        "EM-F1 Gap",
-                        f"{df['em_f1_gap'].mean():.1%}",
-                    )
-                ans_df = df[df["is_impossible"] == False]
-                with g4:
-                    st.metric("Total Loss", f"{ans_df['final_qa_loss'].mean():.1%}")
-                
-                with g5:
-                    st.metric("Avg Recall Loss", f"{df['final_recall_loss'].mean():.1%}")
-
-                gap = df["em_f1_gap"].mean()
-                if gap > 0.15:
-                    st.info(f"EM degraded {gap:.0%} more than F1.")
-                elif len(df) > 0:
-                    st.info(
-                        "EM and F1 degraded together, indicating the answer content was lost "
-                    )
             except Exception as e:
                 st.warning(f"Error: {e}")
 
-            st.markdown("### Statistical Summary")
-
-
-            b1, b2 = st.columns(2)
-            with b1:
-                st.metric(
-                    "Reader Floor (n=0)",
-                    f"{df['baseline_qa_loss'].mean():.1%}",
-                )
-        
-            with b2:
-                st.metric(
-                    "Attributable to Pipeline",
-                    f"{df['attributable_qa_loss'].mean():.1%}",
-                )
-
-            stat_cols = st.columns(2)
+            st.write("---")
+            st.markdown("### Faithfulness")
+            stat_cols = st.columns(5)
 
             with stat_cols[0]:
                 st.write("**Rater A (faithfulness)**")
@@ -699,21 +713,19 @@ if file_upload is not None:
                 st.write("**Rater B (faithfulness)**")
                 j2_mean = df["rater_b_faithful"].mean()
                 st.metric("Judged Faithful", f"{j2_mean:.1%}")
-
-            st.write("---")
-
-            col_m8, col_m9, col_m10 = st.columns(3)
-
-            with col_m8:
+            
+            with stat_cols[2]:
                 st.metric("Rater A-B Agreement", f"{df['rater_agreement'].mean():.2%}")
-            with col_m9:
+            with stat_cols[3]:
                 if kappa_calculated:
                     st.metric(
                         "Cohen's κ (inter-rater faithfulness)", f"{cohens_kappa:.4f}"
                     )
                 else:
                     st.metric("Cohen's κ (inter-rater faithfulness)", "n/a")
-            with col_m10:
+
+            
+            with stat_cols[4]:
                 if len(df) > 0:
                     hallucination_rate = df["is_hallucination_failure"].mean()
                 else:
@@ -727,12 +739,10 @@ if file_upload is not None:
                 imp_df = df[df["is_impossible"] == True]
             else:
                 df.iloc[0:0]
-            
+
             try:
                 if imp_df.empty:
-                    st.info(
-                        "No unanswerable (is_impossible) items in this sample"
-                    )
+                    st.info("No unanswerable (is_impossible) items in this sample")
                 else:
                     max_hops = int(imp_df["iterations_completed"].max())
                     fab_rows = []
@@ -741,7 +751,7 @@ if file_upload is not None:
                         for h in imp_df["fabrication_history"]:
                             if isinstance(h, list) and len(h) > hop:
                                 vals.append(h[hop])
-                        
+
                         if vals:
                             fab_rows.append(
                                 {
@@ -755,27 +765,12 @@ if file_upload is not None:
                             pd.DataFrame(fab_rows).set_index("Hop"), color=["#dc3545"]
                         )
 
-                    h1, h2 = st.columns(2)
-                    with h1:
-                        st.metric(
-                            "Items Fabricated at Some Hop",
-                            f"{imp_df['fabricated_any_hop'].mean():.1%}",
-                        )
-                    with h2:
-                        first = imp_df[imp_df["first_fabrication_hop"] > 0][
-                            "first_fabrication_hop"
-                        ]
-                        if len(first):
-                            meanfirstfabhop = f"{first.mean():.1f}"
-                        else:
-                            meanfirstfabhop = "n/a"
-                        st.metric(
-                            "Mean First Fabrication Hop",meanfirstfabhop,
-                        )
+                    
 
             except Exception as e:
                 st.warning(f"Error: {e}")
             st.write("---")
+
             st.subheader("Agent History")
 
             selected_sample_id = st.selectbox(
@@ -788,30 +783,24 @@ if file_upload is not None:
                 with c1:
                     st.markdown(f"**Topic:** {sample_data['topic']}")
                 with c2:
-                    if sample_data['rater_a_faithful'] == 1:
+                    if sample_data["rater_a_faithful"] == 1:
                         rat_a_lbl = "Faithful"
                     else:
                         rat_a_lbl = "Hallucinated"
-                    st.markdown(
-                        f"**Rater A faithfulness:** {rat_a_lbl}"
-                    )
+                    st.markdown(f"**Rater A faithfulness:** {rat_a_lbl}")
                 with c3:
-                    if sample_data['rater_b_faithful'] == 1:
+                    if sample_data["rater_b_faithful"] == 1:
                         rat_b_lbl = "Faithful"
                     else:
                         rat_b_lbl = "Hallucinated"
-                    st.markdown(
-                        f"**Rater B faithfulness:** {rat_b_lbl}"
-                    )
+                    st.markdown(f"**Rater B faithfulness:** {rat_b_lbl}")
 
                 st.markdown("### Benchmark Reference Data")
                 st.info(
                     f"Question asked: {sample_data['question']}\n\n Groundtruth answer: {sample_data['ground_truth']}\n\n All valid answers: {sample_data['all_valid_answers']}"
                 )
 
-                with st.expander(
-                    "Original context", expanded=False
-                ):
+                with st.expander("Original context", expanded=False):
                     st.write(sample_data["original_text_full"])
 
                 st.markdown("### Agent Chain Propagation History")
@@ -831,6 +820,13 @@ if file_upload is not None:
                 if isinstance(answers_history, str):
                     answers_history = ast.literal_eval(answers_history)
 
+                ground_truth_answer = sample_data.get("ground_truth", "N/A")
+                if isinstance(ground_truth_answer, str) and ground_truth_answer.startswith("["):
+                    try:
+                        ground_truth_answer = ast.literal_eval(ground_truth_answer)
+                    except Exception:
+                        pass
+
                 qa_labels = {0.0: "Preserved", 0.5: "Partial Loss", 1.0: "Lost"}
 
                 for i, text in enumerate(text_history):
@@ -839,7 +835,7 @@ if file_upload is not None:
                         drift = semantic_history[i]
                     else:
                         drift = 0.0
-                    
+
                     similarity = 1.0 - drift
                     if i < len(qa_history):
                         qa_score = qa_history[i]
@@ -853,24 +849,26 @@ if file_upload is not None:
                         f"Semantic Drift: {drift:.1%} | Answer Recoverability: {qa_label}"
                     )
                     if depth == len(text_history):
-                        expander_title = "FINAL OUTPUT — " + expander_title
+                        expander_title = "FINAL OUTPUT - " + expander_title
 
                     with st.expander(expander_title, expanded=is_expanded):
                         st.write(text)
                         if i < len(answers_history):
                             reader_ans = answers_history[i]
-                        else: 
-                            "N/A"
+                        else:
+                            reader_ans = "N/A"
 
                         if sample_data["is_impossible"]:
+                            cor_ans = "N/A (Unanswerable)"
                             if "CANNOT_ANSWER" in str(reader_ans).upper():
                                 verdict = "Correctly refused"
                             else:
                                 verdict = "Fabricated"
-                            
+
                         else:
-                            verdict = ""
-                        st.caption(f"Reader Answer: {reader_ans} | Verdict: {verdict}")
+                            cor_ans = sample_data.get("ground_truth", "N/A")
+                            verdict = "N/A (Answerable)"
+                        st.caption(f"Reader Answer: {reader_ans} | Correct Answer: {cor_ans} | Verdict: {verdict}")
 
             st.write("---")
             st.subheader("Export Results")
@@ -910,7 +908,7 @@ if file_upload is not None:
                 for c in manifest_cols:
                     if c in df.columns:
                         present.append(c)
-                
+
                 f_row = df[present].iloc[0]
                 manifest_tab = f_row.rename("value").to_frame()
                 manifest_tab = manifest_tab.astype(str)

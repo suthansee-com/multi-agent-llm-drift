@@ -15,11 +15,13 @@ from nltk import pos_tag
 from nltk.corpus import wordnet
 from nltk.stem import WordNetLemmatizer
 
-AGENT_MODEL = "gemma2:2b"
-READER_MODEL = "llama3:8b"
-RATER_MODEL_A = "llama3:8b"
-RATER_MODEL_B = "mistral:7b"
-EMBEDDER_MODEL = "all-MiniLM-L6-v2"
+from configuration import(
+    AGENT_MODEL,
+    READER_MODEL,
+    RATER_MODEL_A,
+    RATER_MODEL_B,
+    EMBEDDER_MODEL
+    )
 
 
 @st.cache_resource
@@ -221,7 +223,7 @@ def measure_em_recoverability_loss(
         if "cannot_answer" in current_answer:
             return 0.0
         else:
-            1.0
+            return 1.0
 
     if "cannot_answer" in current_answer:
         return 1.0
@@ -257,7 +259,7 @@ def measure_f1_recoverability_loss(
         if "cannot_answer" in current_answer:
             return 0.0
         else:
-            1.0
+            return 1.0
 
     if "cannot_answer" in current_answer:
         return 1.0
@@ -524,13 +526,18 @@ def rate_faithfulness_B(
         return 0
 
 
-def select_checkpoints(depth: int) -> List[int]:
+def select_checkpoints(depth):
     if depth <= 1:
         return [1]
-    checkpoints = {1, depth}
-    if depth > 3:
-        checkpoints.add((depth + 1) // 2)
-    return sorted(checkpoints)
+
+    midpoint = (depth + 1) // 2
+    checkpoints = []
+
+    for i in range(1, depth + 1):
+        if i == 1 or i == depth or (depth > 3 and i == midpoint):
+            checkpoints.append(i)
+
+    return checkpoints
 
 
 def rate_faithfulness_at_checkpoints(
