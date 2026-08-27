@@ -14,14 +14,23 @@ from nltk.tokenize import word_tokenize
 from nltk import pos_tag
 from nltk.corpus import wordnet
 from nltk.stem import WordNetLemmatizer
-
-from configuration import(
+from reader import extract_agent_understanding
+from rater import (
+    rate_faithfulness_A,
+    rate_faithfulness_B,
+    rate_faithfulness_at_checkpoints,
+    select_checkpoints,
+    load_rater_A,
+    load_rater_B,
+)
+from configuration import (
     AGENT_MODEL,
     READER_MODEL,
     RATER_MODEL_A,
     RATER_MODEL_B,
-    EMBEDDER_MODEL
-    )
+    EMBEDDER_MODEL,
+    faithfulness_rubric,
+)
 
 
 @st.cache_resource
@@ -132,56 +141,6 @@ def get_wordnet_pos(treebank_tag: str):
         return wordnet.ADV
     else:
         return wordnet.NOUN
-
-
-def extract_agent_understanding(context: str, question: str, seed: int = 42) -> dict:
-    llm = ChatOllama(model=READER_MODEL, temperature=0.0, seed=seed)
-
-    system_prompt = SystemMessage(
-        content=(
-            "You are a precise extractive question-answering system.\n"
-            "You answer only with short spans copied verbatim from the passage."
-        )
-    )
-
-    human_prompt = HumanMessage(content=f"""Text: {context}
-
-Question: {question}
-
-Instructions:
-- Answer with the SHORTEST span copied EXACTLY from the text above.
-- Copy the wording verbatim. Do not paraphrase or write a full sentence.
-- Do not restate the question or add explanation.
-- If the text does not contain the answer, respond with exactly: CANNOT_ANSWER
-
-Format your response exactly as:
-KEY_FACTS: [facts from the text relevant to the question]
-ANSWER: [span only]""")
-
-    try:
-        response = llm.invoke([system_prompt, human_prompt])
-        response_text = response.content.strip()
-
-        understanding = {"full_response": response_text, "key_facts": "", "answer": ""}
-
-        if "KEY_FACTS:" in response_text:
-            facts_start = response_text.find("KEY_FACTS:") + len("KEY_FACTS:")
-
-            if "ANSWER:" in response_text:
-                facts_end = response_text.find("ANSWER:")
-            else:
-                facts_end = len(response_text)
-
-            understanding["key_facts"] = response_text[facts_start:facts_end].strip()
-
-        if "ANSWER:" in response_text:
-            answer_start = response_text.find("ANSWER:") + len("ANSWER:")
-            understanding["answer"] = response_text[answer_start:].strip()
-
-        return understanding
-    except Exception as e:
-        print(f"Error extracting understanding: {e}")
-        return {"full_response": "", "key_facts": "", "answer": ""}
 
 
 def normalize_answer(s: str) -> str:
@@ -443,121 +402,6 @@ def create_pipeline():
     workflow.add_conditional_edges("agent", should_continue, edge_map)
 
     return workflow.compile()
-
-
-@st.cache_resource
-def load_rater_A(seed: int):
-    return ChatOllama(model=RATER_MODEL_A, temperature=0.0, seed=seed)
-
-
-@st.cache_resource
-def load_rater_B(seed: int):
-    return ChatOllama(model=RATER_MODEL_B, temperature=0.0, seed=seed)
-
-
-faithfulness_rubric = (
-    "Decide whether the REWRITTEN passage is FAITHFUL to the ORIGINAL source. "
-    "It is FAITHFUL only if every factual claim it makes is supported by the "
-    "original, with no invented facts, no dropped facts that change the meaning, "
-    "and no distorted relationships between entities. If any claim is unsupported, "
-    "invented, or contradicts the source, it is HALLUCINATED. "
-    "Respond with ONLY one word: FAITHFUL or HALLUCINATED."
-)
-
-
-def rate_faithfulness_A(
-    original_text: str, final_text: str, is_impossible: bool = False, seed: int = 42
-) -> int:
-
-    rater_llm = load_rater_A(seed)
-
-    system_prompt = SystemMessage(
-        content=(
-            f"You are a rigorous, literal-minded fact checker.\n\n{faithfulness_rubric}"
-        )
-    )
-    human_prompt = HumanMessage(content=f"""
-            Original Context (Ground Truth):
-            {original_text}
-            Generated Text (To Evaluate):
-            {final_text}    
-            Is the rewritten passage FAITHFUL to the original source?
-Respond with ONLY: FAITHFUL or HALLUCINATED
-        """)
-    try:
-        response = rater_llm.invoke([system_prompt, human_prompt])
-        verdict = response.content.strip().upper()
-        if "FAITHFUL" in verdict and "HALLUCINATED" not in verdict:
-            return 1
-        return 0
-
-    except Exception as e:
-        print(f"Error during evaluation: {e}")
-        return 0
-
-
-def rate_faithfulness_B(
-    original_text: str, final_text: str, is_impossible: bool = False, seed: int = 42
-) -> int:
-
-    rater_llm = load_rater_B(seed)
-
-    system_prompt = SystemMessage(
-        content=(
-            f"You are a careful, skeptical editor checking for unsupported claims.\n\n{faithfulness_rubric}"
-        )
-    )
-    human_prompt = HumanMessage(
-        content=f"""
-            Original Context (Ground Truth):
-            {original_text}
-            Generated Text (To Evaluate):
-            {final_text}    
-            Is the rewritten passage FAITHFUL to the original source? Respond with ONLY: FAITHFUL or HALLUCINATED"""
-    )
-    try:
-        response = rater_llm.invoke([system_prompt, human_prompt])
-        verdict = response.content.strip().upper()
-        if "FAITHFUL" in verdict and "HALLUCINATED" not in verdict:
-            return 1
-        return 0
-    except Exception as e:
-        print(f"Error during evaluation: {e}")
-        return 0
-
-
-def select_checkpoints(depth):
-    if depth <= 1:
-        return [1]
-
-    midpoint = (depth + 1) // 2
-    checkpoints = []
-
-    for i in range(1, depth + 1):
-        if i == 1 or i == depth or (depth > 3 and i == midpoint):
-            checkpoints.append(i)
-
-    return checkpoints
-
-
-def rate_faithfulness_at_checkpoints(
-    original_context: str,
-    history: List[str],
-    is_impossible: bool = False,
-    seed: int = 42,
-) -> dict:
-    depth = len(history)
-    results = {}
-    for hop in select_checkpoints(depth):
-        text_at_hop = history[hop - 1]
-        a = rate_faithfulness_A(original_context, text_at_hop, is_impossible, seed)
-        b = rate_faithfulness_B(original_context, text_at_hop, is_impossible, seed)
-        results[hop] = {
-            "rater_a": a,
-            "rater_b": b,
-            "both_faithful": int(a == 1 and b == 1),
-        }
-    return results
 
 
 def clean_llm_artefacts(text: str) -> str:

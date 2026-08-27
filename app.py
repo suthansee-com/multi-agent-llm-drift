@@ -7,18 +7,20 @@ import math
 import ast
 from sklearn.metrics import cohen_kappa_score
 import datetime
-from configuration import(
+from configuration import (
     AGENT_MODEL,
     READER_MODEL,
     RATER_MODEL_A,
     RATER_MODEL_B,
-    EMBEDDER_MODEL
-    )
+    EMBEDDER_MODEL,
+)
+from reader import extract_agent_understanding
+from rater import rate_faithfulness_at_checkpoints, select_checkpoints
 from pipeline import (
     create_pipeline,
-    extract_agent_understanding,
-    rate_faithfulness_at_checkpoints,
-    select_checkpoints,
+    # extract_agent_understanding,
+    # rate_faithfulness_at_checkpoints,
+    # select_checkpoints,
     measure_f1_recoverability_loss,
     measure_em_recoverability_loss,
     measure_qa_recall_loss,
@@ -28,7 +30,6 @@ from pipeline import (
 @st.cache_resource
 def get_pipeline_app():
     return create_pipeline()
-
 
 pipeline_app = get_pipeline_app()
 
@@ -121,7 +122,7 @@ if file_upload is not None:
                     return record["source_text_id"]
 
                 answerable_pool.sort(key=get_sort_key)
-                
+
             unanswerable_pool = []
             for r in all_data:
                 if r["is_impossible"] == True:
@@ -223,7 +224,7 @@ if file_upload is not None:
                     progress_bar.progress((idx + 1) / len(valid_sample))
 
                     final_result = pipeline_app.invoke(initial_state)
-                    #st.write(final_result)
+                    # st.write(final_result)
                     scores = final_result.get("core_token_preservation_scores", [])
                     semantic_scores = final_result.get("semantic_drift_scores", [])
                     global_scores = final_result.get("global_drift_scores", [])
@@ -435,7 +436,7 @@ if file_upload is not None:
                             "rater_agreement": rater_agreements,
                         }
                     )
-                    
+
                     try:
                         pd.DataFrame(results_list).to_csv(
                             f"_drift_d{target_depth}_T{exp_temp}_seed{random_seed}_PART.csv",
@@ -548,8 +549,7 @@ if file_upload is not None:
                         ct_row.append(
                             {
                                 "Hop": hop + 1,
-                                "Core Token Preservation": float(np.mean(ct_va))
-                                * 100,  
+                                "Core Token Preservation": float(np.mean(ct_va)) * 100,
                             }
                         )
 
@@ -573,7 +573,6 @@ if file_upload is not None:
                 st.metric(
                     "Avg Local Semantic Drift", f"{df['local_drift_mean'].mean():.2%}"
                 )
-
 
             st.write("Drift Accumulation Curve (Local vs Global)")
             try:
@@ -619,7 +618,7 @@ if file_upload is not None:
 
             st.markdown("#### Answer Recovery")
             g1, g2, g3, g4, g5, g6 = st.columns(6)
-            
+
             with g1:
                 st.metric(
                     "Avg QA Recoverability Loss",
@@ -683,14 +682,16 @@ if file_upload is not None:
                     if f1v or emv or recv:
                         _f1_loss_pct = (float(np.mean(f1v)) * 100) if f1v else None
                         _em_loss_pct = (float(np.mean(emv)) * 100) if emv else None
-                        _recall_loss_pct = (float(np.mean(recv)) * 100) if recv else None
+                        _recall_loss_pct = (
+                            (float(np.mean(recv)) * 100) if recv else None
+                        )
 
                         rows.append(
                             {
                                 "Hop": hop + 1,
                                 "EM loss (strict) %": _em_loss_pct,
                                 "F1 loss (lenient) %": _f1_loss_pct,
-                                "Recall loss %": _recall_loss_pct,  
+                                "Recall loss %": _recall_loss_pct,
                             }
                         )
 
@@ -713,7 +714,7 @@ if file_upload is not None:
                 st.write("**Rater B (faithfulness)**")
                 j2_mean = df["rater_b_faithful"].mean()
                 st.metric("Judged Faithful", f"{j2_mean:.1%}")
-            
+
             with stat_cols[2]:
                 st.metric("Rater A-B Agreement", f"{df['rater_agreement'].mean():.2%}")
             with stat_cols[3]:
@@ -724,7 +725,6 @@ if file_upload is not None:
                 else:
                     st.metric("Cohen's κ (inter-rater faithfulness)", "n/a")
 
-            
             with stat_cols[4]:
                 if len(df) > 0:
                     hallucination_rate = df["is_hallucination_failure"].mean()
@@ -764,8 +764,6 @@ if file_upload is not None:
                         st.line_chart(
                             pd.DataFrame(fab_rows).set_index("Hop"), color=["#dc3545"]
                         )
-
-                    
 
             except Exception as e:
                 st.warning(f"Error: {e}")
@@ -821,7 +819,9 @@ if file_upload is not None:
                     answers_history = ast.literal_eval(answers_history)
 
                 ground_truth_answer = sample_data.get("ground_truth", "N/A")
-                if isinstance(ground_truth_answer, str) and ground_truth_answer.startswith("["):
+                if isinstance(
+                    ground_truth_answer, str
+                ) and ground_truth_answer.startswith("["):
                     try:
                         ground_truth_answer = ast.literal_eval(ground_truth_answer)
                     except Exception:
@@ -868,7 +868,9 @@ if file_upload is not None:
                         else:
                             cor_ans = sample_data.get("ground_truth", "N/A")
                             verdict = "N/A (Answerable)"
-                        st.caption(f"Reader Answer: {reader_ans} | Correct Answer: {cor_ans} | Verdict: {verdict}")
+                        st.caption(
+                            f"Reader Answer: {reader_ans} | Correct Answer: {cor_ans} | Verdict: {verdict}"
+                        )
 
             st.write("---")
             st.subheader("Export Results")
