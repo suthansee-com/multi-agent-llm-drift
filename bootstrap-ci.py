@@ -1,18 +1,54 @@
-import glob, pandas as pd, numpy as np
+import glob
+import numpy as np
+import pandas as pd
 from scipy.stats import bootstrap
 
-def ci(v):
-    v = np.asarray(v, float)
-    if len(v) == 0 or np.all(v == v[0]): return v.mean() if len(v) else np.nan, np.nan, np.nan
-    r = bootstrap((v,), np.mean, confidence_level=0.95, n_resamples=10000, random_state=42).confidence_interval
-    return v.mean(), r.low, r.high
 
-for f in sorted(glob.glob("results/drift_*.csv")):
-    df = pd.read_csv(f, encoding="utf-8")
-    d, t = int(df.pipeline_depth[0]), float(df.temperature[0])
-    ans = df[df.is_impossible == False]; imp = df[df.is_impossible == True]
-    for name, series in [("drift", ans.global_drift_final), ("qa", ans.final_qa_loss),
-                         ("fab", imp.fabrication_rate), ("tok", ans.final_core_token_preservation)]:
-        m, lo, hi = ci(series)
-        print(f"d{d} T{t} {name}: {m:.3f}[{lo:.3f},{hi:.3f}]", end="  ")
-    print(f"faith_fail: {((ans.rater_a_faithful==0)|(ans.rater_b_faithful==0)).mean():.3f}")
+def calculate_confidence_interval(data_series):
+    data_array = np.asarray(data_series, dtype=float)
+
+    if len(data_array) == 0:
+        return np.nan, np.nan, np.nan
+
+    all_same = np.all(data_array == data_array[0])
+    if all_same:
+        mean_value = data_array.mean()
+        return mean_value, np.nan, np.nan
+
+
+    res = bootstrap(
+        (data_array,),
+        np.mean,
+        confidence_level=0.95,
+        n_resamples=10000,
+        random_state=42,
+    )
+    mean_value = data_array.mean()
+    low_bound = res.confidence_interval.low
+    high_bound = res.confidence_interval.high
+    return mean_value, low_bound, high_bound
+
+file_list = glob.glob("results/old/drift_*.csv")
+sorted_files = sorted(file_list)
+
+for file_path in sorted_files:
+    df = pd.read_csv(file_path, encoding="utf-8")
+
+    depth = int(df["pipeline_depth"][0])
+    temp = float(df["temperature"][0])
+
+    answerable_df = df[df["is_impossible"] == False]
+    impossible_df = df[df["is_impossible"] == True]
+
+    drift_mean, drift_lo, drift_hi = calculate_confidence_interval(answerable_df["global_drift_final"])
+    qa_mean, qa_lo, qa_hi = calculate_confidence_interval(answerable_df["final_qa_loss"])
+    tok_mean, tok_lo, tok_hi = calculate_confidence_interval(answerable_df["final_core_token_preservation"])
+    fab_mean, fab_lo, fab_hi = calculate_confidence_interval(impossible_df["fabrication_rate"])
+    unfaithful_condition = (answerable_df["rater_a_faithful"] == 0) | (answerable_df["rater_b_faithful"] == 0)
+    faith_fail_rate = unfaithful_condition.mean()
+
+    print(f"d{depth} T{temp} drift: {drift_mean:.3f}[{drift_lo:.3f},{drift_hi:.3f}]", end="  ")
+    print(f"d{depth} T{temp} qa: {qa_mean:.3f}[{qa_lo:.3f},{qa_hi:.3f}]", end="  ")
+    print(f"d{depth} T{temp} fab: {fab_mean:.3f}[{fab_lo:.3f},{fab_hi:.3f}]", end="  ")
+    print(f"d{depth} T{temp} tok: {tok_mean:.3f}[{tok_lo:.3f},{tok_hi:.3f}]", end="  ")
+    print(f"faith_fail: {faith_fail_rate:.3f}")
