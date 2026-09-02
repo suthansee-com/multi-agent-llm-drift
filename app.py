@@ -18,9 +18,6 @@ from reader import extract_agent_understanding
 from rater import rate_faithfulness_at_checkpoints, select_checkpoints
 from pipeline import (
     create_pipeline,
-    # extract_agent_understanding,
-    # rate_faithfulness_at_checkpoints,
-    # select_checkpoints,
     measure_f1_recoverability_loss,
     measure_em_recoverability_loss,
     measure_qa_recall_loss,
@@ -162,7 +159,6 @@ if file_upload is not None:
                     baseline_understanding = extract_agent_understanding(
                         row["context"], row["question"], int(random_seed)
                     )
-                    # st.write("baseline_understanding ", baseline_understanding)
                     status_text.text(
                         f"Baseline understanding accuired!, measuring Baseline answer recoverability loss.."
                     )
@@ -171,7 +167,6 @@ if file_upload is not None:
                         row["all_valid_answers"],
                         row["is_impossible"],
                     )
-                    # st.write("baseline_qa_loss ", baseline_qa_loss)
                     status_text.text(
                         f"Baseline answer recoverability accuired!, measuring Baseline em recoverability loss.."
                     )
@@ -180,7 +175,6 @@ if file_upload is not None:
                         row["all_valid_answers"],
                         row["is_impossible"],
                     )
-                    # st.write("baseline_em_loss", baseline_em_loss)
                     status_text.text(
                         f"Baseline em recoverability loss accuired!, measuring Baseline recall loss.."
                     )
@@ -189,15 +183,13 @@ if file_upload is not None:
                         row["all_valid_answers"],
                         row["is_impossible"],
                     )
-                    # st.write("baseline_recall_loss ", baseline_recall_loss)
                     status_text.text(
                         f"Baseline recall loss accuired!, running the pipeline..{idx + 1}/{len(valid_sample)}"
                     )
                     baseline_answer = baseline_understanding.get(
                         "answer", "CANNOT_ANSWER"
                     )
-                    # st.write("baseline_answer ", baseline_answer)
-                    # breakpoint()
+
                     initial_state = {
                         "original_context": row["context"],
                         "ground_truth_answer": row["ground_truth_answer"],
@@ -219,12 +211,10 @@ if file_upload is not None:
                         "fabrication_flags": [],
                         "all_valid_answers": row["all_valid_answers"],
                     }
-                    # st.write(initial_state)
-                    # breakpoint()
+
                     progress_bar.progress((idx + 1) / len(valid_sample))
 
                     final_result = pipeline_app.invoke(initial_state)
-                    # st.write(final_result)
                     scores = final_result.get("core_token_preservation_scores", [])
                     semantic_scores = final_result.get("semantic_drift_scores", [])
                     global_scores = final_result.get("global_drift_scores", [])
@@ -732,7 +722,7 @@ if file_upload is not None:
                     hallucination_rate = 0.0
 
                 st.metric("Hallucination Rate", f"{hallucination_rate:.1%}")
-
+            st.write("---")
             st.markdown("#### Hallucination Accumulation by Depth")
 
             if "is_impossible" in df.columns:
