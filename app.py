@@ -28,6 +28,7 @@ from pipeline import (
 def get_pipeline_app():
     return create_pipeline()
 
+
 pipeline_app = get_pipeline_app()
 
 st.set_page_config(layout="wide")
@@ -124,7 +125,6 @@ if file_upload is not None:
             for r in all_data:
                 if r["is_impossible"] == True:
                     unanswerable_pool.append(r)
-
 
                 unanswerable_pool.sort(key=get_sort_key)
 
@@ -669,13 +669,15 @@ if file_upload is not None:
 
                     if f1v or emv or recv:
                         if f1v:
-                            _f1_loss_pct = (float(np.mean(f1v)) * 100)
+                            _f1_loss_pct = float(np.mean(f1v)) * 100
                         else:
                             _f1_loss_pct = None
                         if emv:
-                            _em_loss_pct =  (float(np.mean(emv)) * 100)
+                            _em_loss_pct = float(np.mean(emv)) * 100
                         else:
                             _em_loss_pct = None
+                        if recv:
+                            _recall_loss_pct = float(np.mean(recv)) * 100 
 
                         rows.append(
                             {
