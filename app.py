@@ -125,8 +125,6 @@ if file_upload is not None:
                 if r["is_impossible"] == True:
                     unanswerable_pool.append(r)
 
-                def get_sort_key(record):
-                    return record["source_text_id"]
 
                 unanswerable_pool.sort(key=get_sort_key)
 
@@ -670,11 +668,14 @@ if file_upload is not None:
                             recv.append(r[hop])
 
                     if f1v or emv or recv:
-                        _f1_loss_pct = (float(np.mean(f1v)) * 100) if f1v else None
-                        _em_loss_pct = (float(np.mean(emv)) * 100) if emv else None
-                        _recall_loss_pct = (
-                            (float(np.mean(recv)) * 100) if recv else None
-                        )
+                        if f1v:
+                            _f1_loss_pct = (float(np.mean(f1v)) * 100)
+                        else:
+                            _f1_loss_pct = None
+                        if emv:
+                            _em_loss_pct =  (float(np.mean(emv)) * 100)
+                        else:
+                            _em_loss_pct = None
 
                         rows.append(
                             {

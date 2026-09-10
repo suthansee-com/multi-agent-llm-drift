@@ -145,8 +145,8 @@ def get_wordnet_pos(treebank_tag: str):
 
 def normalize_answer(s: str) -> str:
     s = s.lower()
-    punc_mappin = str.maketrans("", "", string.punctuation)
-    s = s.translate(punc_mappin)
+    punc_remove = str.maketrans("", "", string.punctuation)
+    s = s.translate(punc_remove)
     s = re.sub(r"\b(a|an|the)\b", " ", s)
     wrd = s.split()
     s = " ".join(wrd)
@@ -167,7 +167,12 @@ def squad_f1(prediction: str, ground_truth: str) -> float:
 
 
 def squad_em(prediction: str, ground_truth: str) -> float:
-    ans = float(normalize_answer(prediction) == normalize_answer(ground_truth))
+    pr = normalize_answer(prediction)
+    gt = normalize_answer(ground_truth)
+    if pr == gt:
+        ans = 1.0
+    else:
+        ans = 0.0
     return ans
 
 
@@ -192,7 +197,7 @@ def measure_em_recoverability_loss(
 
     golds = []
     for g in valid_answers or []:
-        if isinstance(g, str) and g.strip():
+        if isinstance(g, str) and g != "":
             golds.append(g)
 
     if not golds:
@@ -228,7 +233,7 @@ def measure_f1_recoverability_loss(
 
     golds = []
     for g in expected_answers or []:
-        if isinstance(g, str) and g.strip():
+        if isinstance(g, str) and g != "":
             golds.append(g)
 
     if not golds:
@@ -283,7 +288,7 @@ def measure_qa_recall_loss(
     if expected_answers is not None:
         for g in expected_answers:
             if isinstance(g, str):
-                if g.strip() != "":
+                if g != "":
                     gold_ans.append(g)
 
     if not gold_ans:
